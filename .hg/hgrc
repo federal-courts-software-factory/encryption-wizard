@@ -1,0 +1,7 @@
+[paths]
+winkyhg = ssh://winkyhg/EW/combined
+nasmaster = ssh://tensnas/ewrepos/master
+testingF = F:/TEMP/master
+
+[ui]
+remotecmd = /opt/bin/hg

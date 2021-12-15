@@ -1,0 +1,2998 @@
+# HG changeset patch
+# User shelve@localhost
+# Date 1601500635 14400
+#      Wed Sep 30 17:17:15 2020 -0400
+# Node ID f7725c4efefd6bc942a80188eff928c587b9a137
+# Parent  88b9e0b1821fe622963f9d1972f0318190138f29
+changes to: Update comments in NOTES and Makefile.
+
+diff --git a/NOTES.txt b/NOTES.txt
+--- a/NOTES.txt
++++ b/NOTES.txt
+@@ -42,8 +42,8 @@
+    the two FIPS builds.  Repeat build steps 3-6 for Govt and Unified.
+ 
+ For a custom build, also on the release branch:
+-8) Tag, create an origin mark, and build as in steps 1-7.
+-9) "build/package -d" and "build/package -c" to bring in appropriate files
++8) Tag, create an origin mark, and build as in steps 1-5.
++9) "build/package -c -d" and "build/package -c" to bring in appropriate files
+    from the corresponding standard release and assemble the packages.
+ 
+ Releasing a standard build involves a lot of copying:
+@@ -81,6 +81,17 @@
+ Some environment variables are useful for testing during development, and may
+ be useful for field debugging if we ship with them enabled.
+ 
++   AFRL_EW_JAVACMD=/full/path/to/java
++   AFRL_EW_JAVACMD=C:\full\path\to\java.exe
++
++Used by both the fallback launching batch file, and the relaunch code in Self,
++this is intended for users (esp on Windows) to designate a specific Java path
++(and therefore version) to use when starting the software.  Self's code will
++unconditionally use this variable if it's set, so (in theory) any version of
++Java can be used to run Launch->Self, and then the designated version will be
++used for EW->Self->EW.  If the fallback batch file is used, then the indicated
++Java launcher will be used even for the first stage, before Self takes over.
++
+    AFRL_EW_OVERPROP=name:value[,name:value,...]
+ 
+ This overrides system property 'name' with value 'value' during startup, as
+diff --git a/config/DEFAULT.cfg b/config/DEFAULT.cfg
+--- a/config/DEFAULT.cfg
++++ b/config/DEFAULT.cfg
+@@ -173,6 +173,7 @@
+ aucKeychainShowPass=true          # unlocks pref_keychain_show_passphrases
+ aucArchiveRestoreAttr=true        # unlocks pref_restore_archive_attributes
+ aucClipboardAutoClear=true        # unlocks pref_clipboard_clear_delay
++aucGenPassChoice=true             # unlocks pref_genpass_name
+ 
+ # Allow the User to Use an action (typically a given GUI menu entry).
+ auuFileAddViaChooser=true         # enables File -> Add file/dir
+@@ -192,9 +193,11 @@
+ ### stored value used here; that value may become an enumerated type with an
+ ### identical formal name.
+ ###
+-### Empty values are written to the defaults properties file as equally empty
+-### assignments (i.e., "pref_foo = "), which the Properties#load() method then
+-### treats as assigning an empty string.
++######### REMINDER
++### Empty values here are written to the defaults properties file as equally
++### empty assignments (i.e., "pref_foo = "), which Properties#load() method
++### then treats as assigning an empty string.
++#########
+ 
+ # Bug compatibility in "stretch iteration", see emails from Rich Kutter in
+ # December 2016.
+@@ -286,6 +289,11 @@
+ # overwriting it with some other text.  Set to 0 to disable.
+ pref_clipboard_clear_delay=30
+ 
++# An empty NAME value will be switched to PassGenSettingsManager.LABEL_DEFAULTS
++pref_genpass_name=
++# There's no good way to do this one.
++#pref_genpass_all=
++
+ # Default look-and-feel token for the GUI.
+ guilaf="system"
+ 
+diff --git a/config/_prefs b/config/_prefs
+--- a/config/_prefs
++++ b/config/_prefs
+@@ -2,7 +2,8 @@
+ # This is neither a runnable scripts nor a top-level config.  The #! is only
+ # to trick text editors with syntax coloring (but will make the 'x' permission
+ # bit appear active under Cygwin regardless of actual permissions).  This is
+-# sourced from genbuildconfig to perform 'register_*' calls.
++# sourced from genbuildconfig to perform 'register_*' calls, after the config
++# snippets have been sourced.
+ 
+ 
+ # Listing a boolean variable name with register_bool is enough to cause it to
+@@ -76,6 +77,9 @@
+ 
+ register_typed_pref pref_clipboard_clear_delay aucClipboardAutoClear Integer
+ 
++register_typed_pref pref_genpass_name aucGenPassChoice String
++register_typed_pref pref_genpass_all true 'String[]'
++
+ register_typed_pref pref_compat33_siter aucCompat33SIter #Boolean \
+ 	#'compat33blahblahblah | p -> Boolean.TRUE'
+ register_typed_pref pref_warn_bcfips_lowkeys true
+diff --git a/res/launch_drop_jar.bat b/res/launch_drop_jar.bat
+--- a/res/launch_drop_jar.bat
++++ b/res/launch_drop_jar.bat
+@@ -11,8 +11,16 @@
+ rem to determined the java.exe path before launching:
+ rem     C:\some\path\to\java.exe -jar C:\another\path\to\EW.jar
+ rem
+-rem We'll also turn off ANSI highlighting because its console can't do that
+-rem and the user will be staring at a bunch of noise for a while.
++rem Be aware that ANY PATHNAME CONTAINING SPACES is likely to break, due to
++rem wildly inconsistent quoting under different versions of Windows.  As of
++rem Windows 10 in mid-2020, we have mostly given up trying to guess how the
++rem CMD.EXE interpreter parses/removes the quotes.  (We cannot use PowerShell
++rem because the interpreter is often prohibited from running for unprivileged
++rem accounts in DoD environments.)
++rem
++rem We'll also turn off ANSI highlighting in EW logging because the Windows
++rem console can't do that safely and the user will be staring at a bunch of
++rem noise for a while.
+ 
+ 
+ rem I'll be the first to admit that most of this batch file was cribbed from
+@@ -29,9 +37,10 @@
+ set _EW_ARGS=
+ 
+ rem there should be exactly one argument, namely the JAR file
+-if "%~1" == "" goto badArg
++if ""%1"" == """" goto badArg
+ set "_EWJAR=%~1"
+-rem XXX test whether it's actually a jar file they dropped?
++rem XXX test whether it's actually a jar file they dropped?  Good luck
++rem getting that syntax right...
+ 
+ rem The rules that Eclipse's Ant seems to follow for finding a Java launcher
+ rem are more rem or less these, stopping as soon as a file is found:
+@@ -45,16 +54,26 @@
+ rem like JDK-8189427 and JDK-8162456.  Case (4) is likely to be the majority
+ rem of the userbase, especially the AFNET SDC.
+ rem
++rem We preempt it all with
++rem   (0) use the AFRL_EW_JAVACMD var if it's set
++rem if they need to be very narrow in scope when overriding.  EW 3.5.10 and
++rem later will use that variable itself, so it will take effect even when this
++rem batch file is never used.
++rem
++rem DO NOT USE javaw.exe FOR THIS PURPOSE, it breaks when started from a batch.
++rem
+ rem set JAVACMD=C:\Java\x64\jdk-11.0.1\bin\java.exe useful for testing downstairs
+-set _JAVACMD=%JAVACMD%
++set "_JAVACMD=%AFRL_EW_JAVACMD%"
++if ""%_JAVACMD%"" == """" set "_JAVACMD=%JAVACMD%"
+ 
+ rem This reads like assembly code, but is maximally portable
+-if "%JAVA_HOME%" == "" goto noJavaHome
++if ""%JAVA_HOME%"" == """" goto noJavaHome
+ if not exist "%JAVA_HOME%\bin\java.exe" goto noJavaHome
+-if "%_JAVACMD%" == "" set _JAVACMD=%JAVA_HOME%\bin\java.exe
++if ""%_JAVACMD%"" == """" set _JAVACMD=%JAVA_HOME%\bin\java.exe
+ :noJavaHome
++
+ rem If nothing by now, scan the PATH
+-if "%_JAVACMD%" == "" (
++if ""%_JAVACMD%"" == """" (
+     rem Ideally we could use javaw.exe for this.  Pity.
+     where /q java.exe || goto badExe
+     set _JAVACMD=java.exe
+@@ -64,8 +83,10 @@
+ :badExe
+ echo.
+ echo No Java launcher executable (java.exe) was found in your PATH.  Make
+-echo certain Java SE is installed, then either adjust the PATH accordingly
+-echo or set the JAVACMD environment variable to the full launcher path.
++echo certain Java SE is installed.  If the JAR file still does not run on
++echo its own and this batch file still cannot find the Java launcher, then
++echo either adjust the PATH accordingly, or set the AFRL_EW_JAVACMD environment
++echo variable to the full launcher location, including the .exe file.
+ echo.
+ echo.
+ echo.
+@@ -75,7 +96,7 @@
+ :badArg
+ echo.
+ echo If double-clicking the Encryption Wizard JAR file does not launch the
+-echo software on your system, then it is likely that your installation of
++echo software on your system, then it is likely that the Windows install of
+ echo Java has some misconfigured file associations and should be reinstalled.
+ echo.
+ echo In the meantime, Encryption Wizard may be launched by dragging the EW
+@@ -97,10 +118,10 @@
+ :end
+ rem Apparently resetting an undefined env variable hoses up the errorlevel,
+ rem so we need to jump through more fiery hoops simply to exit cleanly.
+-if not "%_JAVACMD%" == "" set _JAVACMD=
+-if not "%_EWJAR%" == "" set _EWJAR=
+-if not "%_JVM_ARGS%" == "" set _JVM_ARGS=
+-if not "%_EW_ARGS%" == "" set _EW_ARGS=
++if not ""%_JAVACMD%"" == """" set _JAVACMD=
++if not ""%_EWJAR%"" == """" set _EWJAR=
++if not ""%_JVM_ARGS%"" == """" set _JVM_ARGS=
++if not ""%_EW_ARGS%"" == """" set _EW_ARGS=
+ rem not really sure if these are needed, but they're at least harmless
+ if "%OS%" == "WINNT" @endlocal
+ if "%OS%" == "Windows_NT" @endlocal
+diff --git a/src/main/afrlew/CLI.java b/src/main/afrlew/CLI.java
+--- a/src/main/afrlew/CLI.java
++++ b/src/main/afrlew/CLI.java
+@@ -32,11 +32,12 @@
+ 	private final URLClassLoader ucl;
+ 
+ 	/**
+-	 * Called when a 'print help and exit' option is parsed.  This should
++	 * Called when a 'print stuff and exit' option is parsed.  This should
+ 	 * eventually call {@link System#exit(int) exit()} with the given code.
+ 	 * The return value may always be null, but is declared to be an unchecked
+ 	 * exception so that callers may "throw" an otherwise-NOTREACHED function
+-	 * call.
++	 * call; nothing is ever actually thrown, but it allows the compiler to
++	 * not lose its mind over variable lifetimes versus initialization.
+ 	 */
+ 	private final Function<EXIT,RuntimeException> localexit;
+ 
+diff --git a/src/main/afrlew/Self.java b/src/main/afrlew/Self.java
+--- a/src/main/afrlew/Self.java
++++ b/src/main/afrlew/Self.java
+@@ -23,6 +23,7 @@
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.DirectoryNotEmptyException;
+ import java.nio.file.Files;
++import java.nio.file.InvalidPathException;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
+ import java.util.ArrayList;
+@@ -810,6 +811,28 @@
+ 		if (argv.length > 0) {
+ 			cmd.addAll(Arrays.asList(argv));
+ 		}
++
++		String launchOverride = System.getenv("AFRL_EW_JAVACMD");
++		if (launchOverride != null) {
++			try {
++				launchOverride = launchOverride.trim();
++				Path loPath = Paths.get(launchOverride);
++				if (Files.isExecutable(loPath)) {
++					String prev = cmd.set (0, launchOverride);
++					dlaunch.format("not using Java launch binary '%s', replacing with '%s' instead%n", prev, launchOverride);
++				} else {
++					InvalidPathException badpath = new InvalidPathException (launchOverride,
++							String.format(
++								"AFRL_EW_JAVACMD value '%s' is not a runnable program.",
++								launchOverride));
++					return SysUtils.Pair.mkpair (badpath, null);
++				}
++			}
++			catch (InvalidPathException badpath) {
++				badpath.printStackTrace(System.err);
++				return SysUtils.Pair.mkpair (badpath, null);
++			}
++		}
+ 		dlaunch.println("relaunch command array is " + String.join(" | ",cmd));
+ 
+ 		final Process p;
+diff --git a/src/main/afrlew/genpass/GenPasswordPanel.java b/src/main/afrlew/genpass/GenPasswordPanel.java
+--- a/src/main/afrlew/genpass/GenPasswordPanel.java
++++ b/src/main/afrlew/genpass/GenPasswordPanel.java
+@@ -113,19 +113,16 @@
+ 	}
+ 
+ 
+-	// Instance data
+ 	private final JPOActioner ownActions;
+-	private Window parentWindow;
+-	private JSpinner numChars;
+-	private JLabel numUpperLabel, numLowerLabel, numSpecialLabel, numNumeralsLabel;
+-	private JSpinner numUpper, numLower, numSpecial, numNumerals;
+-	private JTextField passwordField;
+-	private JLabel copyCountdownLabel;
+-	private JButton copyButton;
+-	private JButton addButton;
+-	private JLabel strengthNote;
+-
+-	private boolean spinnerStateChangeUseful = false;
++	private       Window parentWindow;
++	private       JSpinner numChars;
++	private       JLabel numUpperLabel, numLowerLabel, numSpecialLabel, numNumeralsLabel;
++	private       JSpinner numUpper, numLower, numSpecial, numNumerals;
++	private       JTextField passwordField;
++	private       JLabel copyCountdownLabel;
++	private       JButton copyButton, addButton;
++	private       JLabel strengthNote;
++	private       boolean spinnerStateChangeUseful = false;
+ 
+ 	//private TimerTask clearClipboard;
+ 
+@@ -482,6 +479,8 @@
+ 			return;
+ 		}
+ 
++		// FIXME check for all specials unchecked, but >0 specials required
++
+ 		Pass passphrase = null;
+ 		try {
+ 			try {
+@@ -495,6 +494,8 @@
+ 			if (passphrase == null) {
+ 				JOptionPane.showMessageDialog (this,
+ 					"A password satisfying these criteria could not be found within a reasonable time.");
++				passwordField.setText(null);
++				copyButton.setEnabled(false);
+ 				return;
+ 			}
+ 
+@@ -605,7 +606,7 @@
+ 
+ 		JSpinner source = (JSpinner) ce.getSource();
+ 		int newval = ((Integer)source.getValue()).intValue();
+-		PassGenSettings pgs = GenPasswordPanel.PASSGEN.getCurrentSettings();
++		PassGenSettings pgs = PASSGEN.getCurrentSettings();
+ 
+ 		// We could make this all generalized, with this file holding a child
+ 		// of JSpinner carrying around a tag saying which param to change.
+diff --git a/src/main/afrlew/genpass/PassGenSettings.java b/src/main/afrlew/genpass/PassGenSettings.java
+--- a/src/main/afrlew/genpass/PassGenSettings.java
++++ b/src/main/afrlew/genpass/PassGenSettings.java
+@@ -5,13 +5,17 @@
+ import java.io.IOException;
+ import java.io.PrintWriter;
+ import java.nio.charset.Charset;
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.HashSet;
+ import java.util.List;
++import java.util.Objects;
+ import java.util.Properties;
++import java.util.Scanner;
++import java.util.Set;
+ 
+ import javax.swing.AbstractAction;
+ import javax.swing.Action;
+@@ -26,37 +30,17 @@
+ import afrlew.Log;
+ import afrlew.io.WzdException;
+ import afrlew.util.FileUtils;
++import afrlew.util.SysUtils;
++import afrlew.wizard.EWizardException;
+ 
+ /**
+  * A sort-of-smart wrapper around a bundle of minimum thresholds for EW's
+- * password generator.  This class also handles loading/saving of the optional
+- * configuration file.
++ * password generator.
+  *
+  * <p>If enforcing is active, then values read from the configuration file
+  * will be raised to meet minimums if needed.  That is the only time that
+  * this class tests the enforcing flag.  In particular, subsequent calls to
+  * setXXX() do not enforce any lower bounds.
+- *
+- * <p>Generally, only one instance of this class exists, as a singleton
+- * representing the user's master configuration file.  Other instances can
+- * be created from other files.
+- *
+- * @param numChars
+- *            positive total threshold of characters, with no maximum bound
+- * @param minLower
+- *            nonnegative threshold of lowercase characters
+- * @param minUpper
+- *            nonnegative threshold of uppercase characters
+- * @param minSpecial
+- *            nonnegative threshold of punctuation-type characters
+- * @param minNum
+- *            nonnegative threshold of digits
+- * @param exclusionList
+- *            non-null but possibly empty list of characters to not use
+- * @param startWithSpecial
+- *            true to permit the initial password character to potentially
+- *            be one of the special punctuation-type, false to restrict it
+- *            to letters and digits
+  */
+ public class PassGenSettings
+ {
+@@ -64,76 +48,8 @@
+ 	private static final String CONFFILENAME = "passgen.conf";
+ 
+ 
+-	private static List<Character>
+-	getDefaultExclusionList()
+-	{
+-		return Arrays.asList(
+-				'%', '~', '!', '@', '#', '$', '^', '&', '*', '(', ')', ';',
+-				'\'', '\"', ',', '<', '>', '?', '/', '\\', '{', '}', '|', ' ');
+-	}
+-
+-
+-	/**
+-	 * Parses out a brace-enclosed expression and builds a new instance.
+-	 *
+-	 * <p>If the parsed settings do not meet the enforced minimum thresholds
+-	 * for the current EW, this will bump them up.
+-	 *
+-	 * <p>If the returned instance is eventually used in a GenPasswordPanel
+-	 * to save settings to disk, the user default file (as in
+-	 * {@link #getSettings()}) will be overwritten.
+-	 *
+-	 * @param expr
+-	 *            of the form {TOTAL,UPPER,LOWER,SPECIAL,DIGITS}
+-	 * @return a PGS instance ready to be used, or null on parse errors
+-	 *         (including not starting/ending with curly braces)
+-	 */
+-	public static PassGenSettings
+-	fromExpression (String expr)
+-	{
+-		// Also see afrlew.io.WzdMeta.newFromExpression
++	/*
+ 
+-		if (expr.charAt(0) != '{'
+-		   || expr.charAt(expr.length()-1) != '}')
+-		{
+-			return null;
+-		}
+-		expr = expr.substring (1, expr.length()-1);
+-
+-		// see getConfigured()
+-		int lChars, mLower, mUpper, mSpec, mNum;
+-		Collection<Character> excl = new HashSet<>(getDefaultExclusionList());
+-		boolean startsSpec = true;
+-
+-		try (java.util.Scanner sc = new java.util.Scanner(expr))
+-		{
+-			sc.useDelimiter(",\\s*");
+-			// we don't test for "has input" here, we simply require all of them
+-			lChars = sc.nextInt();
+-			mUpper = sc.nextInt();
+-			mLower = sc.nextInt();
+-			mSpec = sc.nextInt();
+-			mNum = sc.nextInt();
+-		}
+-		catch (java.util.NoSuchElementException
+-		       | IllegalStateException bad)
+-		{
+-			return null;
+-		}
+-
+-		try {
+-			return new PassGenSettings (null, lChars, mLower, mUpper,
+-					mSpec, mNum, excl, startsSpec);
+-		}
+-		catch (WzdException e) {
+-			LOGGER.error("Failed to initialize the password generator settings!  " +
+-					"Error was:  {}", Log.d(e));
+-			throw new RuntimeException(e);
+-		}
+-	}
+-
+-
+-	/**
+ 	 * Loads a copy of the password generator settings from the given file,
+ 	 * which must exist.
+ 	 *
+@@ -141,7 +57,7 @@
+ 	 * for the current EW, this will bump them up.
+ 	 *
+ 	 * @return a PGS instance ready to be used
+-	 */
++	 *
+ 	public static PassGenSettings
+ 	getSettings (Path loadFrom)
+ 	{
+@@ -149,7 +65,6 @@
+ 	}
+ 
+ 
+-	/**
+ 	 * Fetches the master copy of the password generator settings.
+ 	 *
+ 	 * <p>If needed, loads settings from the appropriate (optional) user
+@@ -157,17 +72,16 @@
+ 	 * minimum thresholds for the current EW, this will bump them up.
+ 	 *
+ 	 * @return a PGS instance ready to be used
+-	 */
++	 *
+ 	public static PassGenSettings
+ 	getSettings()
+ 	{
+-		if (singleton == null) {
+-			singleton = getConfigured(FileUtils.getConfigFile(CONFFILENAME));
++		if (SINGLETON == null) {
++			SINGLETON = getConfigured(FileUtils.getConfigFile(CONFFILENAME));
+ 		}
+-		return singleton;
++		return SINGLETON;
+ 	}
+ 
+-	/**
+ 	 * Sets a new master copy of the password generator settings.
+ 	 *
+ 	 * <p>This can be used to preempt the default user configuration file.  If
+@@ -175,21 +89,27 @@
+ 	 * is called, the configuration file will be consulted again.
+ 	 *
+ 	 * @return the previous master copy (may be null)
+-	 */
++	 *
+ 	public static PassGenSettings
+ 	setDefaults (PassGenSettings master)
+ 	{
+-		PassGenSettings prev = singleton;
+-		singleton = master;
++		PassGenSettings prev = SINGLETON;
++		SINGLETON = master;
+ 		return prev;
+ 	}
+-	private static PassGenSettings singleton = null;
++	private static PassGenSettings SINGLETON = null;*/
++
++
++	enum TYPE { BUILTIN, EXPRESSION, PATH_REL, PATH_EXT }
+ 
+ 
+-	private int             lenChars, mLower, mUpper, mSpecial, mDigit;
+-	private boolean         mayStartWithSpecial, significantChange;
+-	private Collection<Character>   excluded;
+-	private Path            source;
++	private final String          label;
++	private final TYPE            type;
++	private final Path            source;
++	private       String          desc;
++	private       int             lenChars, mLower, mUpper, mSpecial, mDigit;
++	private       boolean         mayStartWithSpecial, significantChange;
++	private       Set<Character>  excluded;
+ 
+ 
+ 	/**
+@@ -198,29 +118,85 @@
+ 	 * <p>In the case of enforced password specifications, any parameters not
+ 	 * meeting the minimum specs will be bumped up to minimum (and logged).
+ 	 *
+-	 * @throws WzdException if nonsensical parameters are passed
++	 * <p>Package private.
++	 *
++	 * @param stype
++	 *            This is specified externally now, rather than trying to determine
++	 *            the situation from special-casing the paths and suchlike.
++	 * @param baseLabel
++	 *            a human readable name for these settings; for non-builtin sets,
++	 *            this name must be a valid filename, even if we don't use it as such
++	 * @param from
++	 *            null if builtin or brace expression,
++	 *            else ?????? if relative to the application data directory,
++	 *            else full path for external storage
++	 * @param desc
++	 *            a human readable description, may be null/empty
++	 * @param lChars
++	 *            positive total threshold of characters, with no maximum bound
++	 * @param minLower
++	 *            nonnegative threshold of lowercase characters
++	 * @param minUpper
++	 *            nonnegative threshold of uppercase characters
++	 * @param minSpecial
++	 *            nonnegative threshold of punctuation-type characters
++	 * @param minDigit
++	 *            nonnegative threshold of digits
++	 * @param excl
++	 *            non-null but possibly empty collection of characters to not use
++	 *            (this reference is copied live)
++	 * @param startsSpec
++	 *            true to permit the initial password character to potentially
++	 *            be one of the special punctuation-type, false to restrict it
++	 *            to letters and digits
++	 * @throws EWizardException if nonsensical parameters are passed
+ 	 */
+-	private PassGenSettings (Path from, int lChars, int minLower, int minUpper,
+-			int minSpecial,	int minDigit,
+-			Collection<Character> excl, boolean startsSpec)
+-		throws WzdException
++	PassGenSettings (TYPE stype, String baseLabel, Path from, String desc,
++			int lChars, int minLower, int minUpper, int minSpecial,	int minDigit,
++			Set<Character> excl, boolean startsSpec)
++		throws EWizardException
+ 	{
++		baseLabel = Objects.requireNonNull (baseLabel, "null PGS label").trim();
+ 		if (lChars < 1)
+-			throw new WzdException("Cannot generate a passphrase with fewer than one character.");
++			throw EWizardException.LT (LOGGER, null, "Cannot generate a zero-length password.");
+ 		if (minLower < 0 || minUpper < 0 || minSpecial < 0 || minDigit < 0)
+-			throw new WzdException("Passphrase generator given negative parameter.");
++			throw EWizardException.LT (LOGGER, null, "Passphrase generator given a negative parameter.");
+ 		if (excl == null)
+-			throw new WzdException("Passphrase generator given a null exclusion list.");
++			throw EWizardException.LT (LOGGER, null, "Passphrase generator given a null exclusion list.");
++
++		switch (stype) {
++			case BUILTIN:
++				//this.label = '<' + baseLabel + '>';
++				from = null;
++				break;
++			case EXPRESSION:
++				from = null;
++				break;
++			case PATH_REL:
++				from = from.getFileName();
++				break;
++			case PATH_EXT:
++				from = SysUtils.getUserBaseDir().resolve(from);
++				break;
++		}
++		this.type = stype;
++		this.label = baseLabel;
++
++		if (type != TYPE.BUILTIN && type != TYPE.EXPRESSION) {
++			if (!FileUtils.isSafeName(label))
++				throw EWizardException.LT (LOGGER, null, "invalid PGS label <<%s>>", label);
++		}
+ 
+ 		this.source = from;
++		this.desc = desc;
+ 		this.lenChars = enforce (lChars, BuildConfig.Mins.passLength, "total length");
+ 		this.mLower = enforce (minLower, BuildConfig.Mins.lowerLetters, "lowercase letters");
+ 		this.mUpper = enforce (minUpper, BuildConfig.Mins.capLetters, "uppercase letters");
+ 		this.mSpecial = enforce (minSpecial, BuildConfig.Mins.specialChars, "special characters");
+ 		this.mDigit = enforce (minDigit, BuildConfig.Mins.numbers, "numerals");
+ 		this.mayStartWithSpecial = startsSpec;
++		this.significantChange = false;
+ 		this.excluded = excl;
+-		this.significantChange = false;
+ 	}
+ 
+ 
+@@ -233,7 +209,8 @@
+ 	enforce (int given, int min, String param)
+ 	{
+ 		if (BuildConfig.keyPasswordsEnforce && given < min) {
+-			LOGGER.warn("Passphrase generator parameter '{}' was only {}, raising to minimum of {}",
++			LOGGER.warn("Passphrase generator '{}' parameter '{}' was only {}, raising to minimum of {}",
++				label,
+ 				param, given, min);
+ 			return min;
+ 		} else return given;
+@@ -268,12 +245,14 @@
+ 	}
+ 
+ 
+-	public Path
+-	getSource()
+-	{
+-		return source;
+-	}
+-
++	/** Includes any added markup, such as surrounding &lt;/&gt;. */
++	public String getLabel()         { return label; }
++	/** May be null/empty. */
++	public String getDescription()   { return desc; }
++	/** Package private. */
++	       final TYPE getType() { return type; }
++	/** might be null, might be absolute, might not */
++	public Path getSource()          { return source; }
+ 
+ 	public int getNumberOfChars()    { return lenChars; }
+ 	public int getMinimumLower()     { return mLower; }
+@@ -285,20 +264,37 @@
+ 		return mayStartWithSpecial;
+ 	}
+ 
++	@Override
++	public boolean
++	equals (Object o)
++	{
++		if (this == o)
++			return true;
++		if (o == null || getClass() != o.getClass())  // subclass variant?
++			return false;
++		PassGenSettings that = (PassGenSettings) o;
++		return getType() == that.getType()
++				&& getLabel().equals(that.getLabel());
++				//&& Objects.equals(getSource(), that.getSource());
++	}
++
++	@Override
++	public int hashCode() {
++		return Objects.hash (getLabel(), getType(), getSource());
++	}
++
++
+ 	// NOTA BENE:  The 'is selected' state is for when the character is ALLOWED.
+ 	private class ToggleCharAction extends AbstractAction
+ 	{
+-//		private final Collection<Character> exclset;
+ 		private final Character c;
+ 		//private final String    label;
+ 		private ToggleCharAction (Collection<Character> excl, Character ac) {
+ 			super (ac.charValue() == ' ' ? "space" : ac.toString());
+-//			this.exclset = excl;
+ 			this.c = ac;
+ 			//putValue (Action.SHORT_DESCRIPTION, "If checked, ");
+ 			putValue (Action.SELECTED_KEY, Boolean.valueOf(!excl.contains(c)));
+-System.err.format(">> ToggleCharAction constructed, '%c' selected is %s%n", c.charValue(),
+-	getValue(Action.SELECTED_KEY));
++System.err.format(">> ToggleCharAction constructed, '%c' selected is %s%n", c.charValue(), getValue(Action.SELECTED_KEY));
+ 		}
+ 		private ToggleCharAction (Collection<Character> cc, char c) { this(cc,Character.valueOf(c)); }
+ 
+@@ -306,8 +302,8 @@
+ 		public void actionPerformed (ActionEvent ae)
+ 		{
+ System.err.format("== action performed, event %s%n\t'%c' SELECTED is now %s%n",
+-		ae, c, getValue(Action.SELECTED_KEY)
+-		);
++	ae, c, getValue(Action.SELECTED_KEY)
++	);
+ 			// static AbstractAction.isSelected is not visible to subclasses
+ 			boolean nowSelected = Boolean.TRUE.equals(getValue(Action.SELECTED_KEY));
+ 			if (nowSelected)
+@@ -330,12 +326,14 @@
+ 		return excluded.contains(c);
+ 	}
+ 
++	// note: reference is live
+ 	public Collection<Character>
+ 	getExcludedChars()
+ 	{
+-		return excluded;   // note: reference is live
++		return excluded;
+ 	}
+ 
++	// only used by CLI for "safe mode", could probably redo after this
+ 	public void
+ 	setExcludedChars (Collection<Character> excl)
+ 	{
+@@ -343,7 +341,7 @@
+ 			LOGGER.warn("setExcludedChars given a null list pointer!");
+ 			return;  // maybe throw?
+ 		}
+-		this.excluded = excl;
++		this.excluded = new HashSet<>(excl);
+ 		this.significantChange = true;
+ 		fireChangeSettings();
+ 	}
+@@ -416,138 +414,69 @@
+ 	}
+ 
+ 
+-	/**
+-	 * Loads a password configuration, or uses build-time defaults, to create
+-	 * a new PGS instance.
+-	 *
+-	 * @param maybesaved
+-	 *            Pointer to a saved password configuration, if it exists.
+-	 * @throws RuntimeException if something goes seriously wrong
+-	 */
+-	private static PassGenSettings
+-	getConfigured (Path maybesaved)
++	@Override
++	public String
++	toString()
+ 	{
+-		if (maybesaved == null)
+-			throw new IllegalArgumentException("Null passgensettings path!");
+-
+-		// These are not enforced (here), but they make useful defaults.  The
+-		// runtime type of the exclusion list (HashSet) is only involved here
+-		// and in SpecialsDialog#getExclusionChoices.
+-		int lChars = BuildConfig.Mins.passLength,
+-			mLower = BuildConfig.Mins.lowerLetters,
+-			mUpper = BuildConfig.Mins.capLetters,
+-			mSpec = BuildConfig.Mins.specialChars,
+-			mNum = BuildConfig.Mins.numbers;
+-		Collection<Character> excl = new HashSet<>();
+-		boolean startsSpec = true;
+-
+-		if (Files.exists(maybesaved)) {
+-			LOGGER.info("Loading saved password generator settings from {}", maybesaved);
+-
+-			Properties map = null;
+-			try (BufferedReader reader =
+-					Files.newBufferedReader(maybesaved,Charset.defaultCharset()))
+-			{
+-				map = new Properties();
+-				try {
+-					map.load(reader);
+-				}
+-				catch (IOException e) {
+-					LOGGER.error("Mangled password generator config file:  {}", Log.d(e));
+-					throw new RuntimeException(e);
+-				}
+-			}
+-			catch (final IOException e) {
+-				LOGGER.error("Could not open {} for reading saved password generator config:  {}",
+-						maybesaved, Log.d(e));
+-				throw new RuntimeException(e);
+-			}
+-
+-			String val = map.getProperty("NUM_CHARS");
+-			if (val != null)
+-				lChars = Integer.parseInt (val, 10);
+-			val = map.getProperty("NUM_UPPER");
+-			if (val != null)
+-				mUpper = Integer.parseInt (val, 10);
+-			val = map.getProperty("NUM_LOWER");
+-			if (val != null)
+-				mLower = Integer.parseInt (val, 10);
+-			val = map.getProperty("NUM_SPECIAL");
+-			if (val != null)
+-				mSpec = Integer.parseInt (val, 10);
+-			val = map.getProperty("NUM_NUMERALS");
+-			if (val != null)
+-				mNum = Integer.parseInt (val, 10);
+-			val = map.getProperty("START_WITH_SPECIAL");  // transition old name
+-			if (val != null)
+-				startsSpec = Boolean.parseBoolean(val);
+-			val = map.getProperty("MAY_START_WITH_SPECIAL");
+-			if (val != null)
+-				startsSpec = Boolean.parseBoolean(val);
+-			val = map.getProperty("EXCLUSION_LIST");
+-			if (val != null) {
+-				for (char c : val.toCharArray())
+-					excl.add(c);
+-			}
+-		} else {
+-			// The defaults at variable initialization above are good to
+-			// start, just need to fill out this list with reasonable choices.
+-			excl.addAll(getDefaultExclusionList());
+-		}
+-
+-		try {
+-			return new PassGenSettings (maybesaved, lChars, mLower, mUpper,
+-					mSpec, mNum, excl, startsSpec);
+-		}
+-		catch (WzdException e) {
+-			LOGGER.error("Failed to initialize the password generator settings!  Error was:  {}", Log.d(e));
+-			throw new RuntimeException(e);
+-		}
++		return "PassGenSettings{" +
++				"label='" + label + '\'' +
++				", type=" + type +
++				", source=" + source +
++				", desc='" + desc + '\'' +
++				", lenChars=" + lenChars +
++				", mLower=" + mLower +
++				", mUpper=" + mUpper +
++				", mSpecial=" + mSpecial +
++				", mDigit=" + mDigit +
++				", mayStartWithSpecial=" + mayStartWithSpecial +
++				", significantChange=" + significantChange +
++				", excluded=" + Arrays.deepToString(excluded.toArray()) +
++				'}';
+ 	}
+ 
+ 
+-	/**
+-	 * Writes the current configuration to disk.  Returns the path of the
+-	 * written file.
+-	 * @throws RuntimeException if something goes seriously wrong
+-	 */
+-	public Path
+-	saveConfiguration()
+-	{
+-		FileUtils.NamedOpenFile cf = null;
+ 
+-		if (source == null) {
+-			// this can only happen if --genpass-param was used with a brace
+-			// expression and the GUI was still launched
+-			cf = FileUtils.writingConfigFile(CONFFILENAME);
+-			this.source = cf.pathname;
+-
+-		} else {
+-			cf = new FileUtils.NamedOpenFile (source, Charset.defaultCharset());
+-		}
+-
+-		return saveConfiguration(cf);
+-	}
+ 
+ 
+ 	/**
+-	 * Writes the current configuration to disk.  Returns the path of the
+-	 * written file.
++	 * Stores the current settings to this instance's configured filename on
++	 * disk, if these settings are associated with an external file in the
++	 * first place.
+ 	 *
+-	 * @param configfile
+-	 *            Open writer will be a PrintWriter.
+-	 * @throws RuntimeException if something goes seriously wrong
++	 * <p>Settings from a command line brace expression, and those that are
++	 * built-in to the software, silently do nothing.
++	 *
++	 * @return Full path to the written file, or {@code null} if the settings
++	 *         never had a filename.
++	 * @throws RuntimeException serious I/O problems, or an unknown getType()
+ 	 */
+ 	private Path
+-	saveConfiguration (FileUtils.NamedOpenFile configfile)
++	saveConfiguration()
+ 	{
+-		if (configfile == null)
+-			throw new RuntimeException("Password generator config was asked to save to a null file!");
++		switch (getType()) {
++			case BUILTIN: case EXPRESSION: return null;
++			// we leave pass-throughs here so that any additional enum members
++			// will trigger unhandled warnings at compilation:
++			case PATH_EXT: case PATH_REL: break;
++			default:
++				throw new RuntimeException();
++		}
+ 
+-		StringBuilder ebuild = new StringBuilder(excluded.size());
+-		for (Character c : excluded)
+-			ebuild.append(c);
+-		String excludedcopy = ebuild.toString();
++		FileUtils.NamedOpenFile nof;
++		if (getType() == TYPE.PATH_EXT) {
++			nof = new FileUtils.NamedOpenFile (getSource(), StandardCharsets.US_ASCII);
++		} else {
++			nof = FileUtils.writingConfigFile (getSource().toString(), StandardCharsets.US_ASCII);
++		}
++
++		String excludedcopy;
++		{
++			Collection<Character> excl = getExcludedChars();
++			StringBuilder ebuild = new StringBuilder(excl.size());
++			for (Character c : excl)
++				ebuild.append(c);
++			excludedcopy = ebuild.toString();
++		}
+ 
+ 		// If it weren't such a pain to constantly be doing lookups, we'd
+ 		// just keep one of these around instead of half a dozen different
+@@ -555,15 +484,17 @@
+ 		Properties map = new Properties();
+ 
+ 		// Names here are from the pre-3.4 custom password.cfg file.
+-		map.setProperty ("NUM_CHARS", Integer.toString(lenChars, 10));
+-		map.setProperty ("NUM_UPPER", Integer.toString(mUpper, 10));
+-		map.setProperty ("NUM_LOWER", Integer.toString(mLower, 10));
+-		map.setProperty ("NUM_SPECIAL", Integer.toString(mSpecial, 10));
+-		map.setProperty ("NUM_NUMERALS", Integer.toString(mDigit, 10));
+-		map.setProperty ("MAY_START_WITH_SPECIAL", Boolean.toString(mayStartWithSpecial));
++		map.setProperty ("NUM_CHARS", Integer.toString (getNumberOfChars(), 10));
++		map.setProperty ("NUM_UPPER", Integer.toString (getMinimumUpper(), 10));
++		map.setProperty ("NUM_LOWER", Integer.toString (getMinimumLower(), 10));
++		map.setProperty ("NUM_SPECIAL", Integer.toString (getMinimumSpecial(), 10));
++		map.setProperty ("NUM_NUMERALS", Integer.toString (getMinimumNumerals(), 10));
++		map.setProperty ("MAY_START_WITH_SPECIAL", Boolean.toString(getLeadingSpecial()));
+ 		map.setProperty ("EXCLUSION_LIST", excludedcopy);
++		map.setProperty ("LABEL", getLabel());
++		map.setProperty ("DESCRIPTION", SysUtils.getFirst(getDescription(),""));
+ 
+-		try (PrintWriter w = configfile.writer) {
++		try (PrintWriter w = nof.writer) {
+ 			map.store (w, Constants.EWFULL + " " + Constants.VERSION);
+ 			w.println("# This file may be edited while EW is not running.");
+ 			w.println("# Lines may be deleted to revert to the defaults for this edition.");
+@@ -575,7 +506,7 @@
+ 			throw new RuntimeException(e);
+ 		}
+ 
+-		return configfile.pathname;
++		return nof.pathname;
+ 	}
+ 
+ 
+diff --git a/src/main/afrlew/genpass/PassGenSettingsManager.java b/src/main/afrlew/genpass/PassGenSettingsManager.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/afrlew/genpass/PassGenSettingsManager.java
+@@ -0,0 +1,644 @@
++package afrlew.genpass;
++
++import java.awt.event.ActionEvent;
++import java.io.BufferedReader;
++import java.io.IOException;
++import java.io.PrintWriter;
++import java.nio.charset.Charset;
++import java.nio.file.Files;
++import java.nio.file.InvalidPathException;
++import java.nio.file.Path;
++import java.nio.file.Paths;
++import java.util.Arrays;
++import java.util.Collection;
++import java.util.HashSet;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Properties;
++import java.util.Scanner;
++import java.util.Set;
++import java.util.concurrent.CountDownLatch;
++
++import javax.naming.OperationNotSupportedException;
++import javax.swing.AbstractAction;
++import javax.swing.AbstractListModel;
++import javax.swing.Action;
++import javax.swing.ComboBoxModel;
++import javax.swing.DefaultComboBoxModel;
++import javax.swing.JComboBox;
++import javax.swing.event.ChangeEvent;
++import javax.swing.event.ChangeListener;
++import javax.swing.event.EventListenerList;
++
++import org.slf4j.Logger;
++
++import afrlew.BuildConfig;
++import afrlew.Constants;
++import afrlew.Log;
++import afrlew.genpass.PassGenSettings.TYPE;
++import afrlew.io.WzdException;
++import afrlew.util.FileUtils;
++import afrlew.util.SysUtils;
++import afrlew.util.task.Jobs;
++import afrlew.wizard.EWizardException;
++import afrlew.wizard.prefs.ConfigManager;
++
++/**
++ */
++public final class PassGenSettingsManager
++{
++	private static final Logger LOGGER = Log.getFor (Log.Cat.PASSGEN, PassGenSettingsManager.class);
++	private static final String CONFFILENAME = "passgen.conf";
++
++	private static final String LABEL_DEFAULTS = "<defaults>";
++	private static final String LABEL_SAFE = "<font safe>";
++	private static final String LABEL_EXPRESSION = "<brace expression>";
++
++
++	public static PassGenSettingsManager
++	getInstance()
++	{
++		// Don't need to do any protection here, since we know the caller's
++		// situation is single-threaded startup.
++		if (SINGLETON == null) {
++			SINGLETON = new PassGenSettingsManager();
++		}
++		return SINGLETON;
++	}
++	private static PassGenSettingsManager SINGLETON;
++
++
++	private final DefaultComboBoxModel<PassGenSettings> allpgs;
++	private       PassGenSettings active;
++	private       CountDownLatch scanning;
++
++	private PassGenSettingsManager()
++	{
++		PassGenSettings defs, safe;
++		Set<Character> excl;
++
++		try {
++			excl = new HashSet<>();
++			excl.addAll(PasswordGenerator.getDefaultExclusionList());
++			defs = new PassGenSettings (TYPE.BUILTIN, LABEL_DEFAULTS, null,
++					"Default settings.",
++					BuildConfig.Mins.passLength,
++					BuildConfig.Mins.lowerLetters,
++					BuildConfig.Mins.capLetters,
++					BuildConfig.Mins.specialChars,
++					BuildConfig.Mins.numbers,
++					excl, true);
++			excl = null;
++		}
++		catch (EWizardException e) {
++			LOGGER.error("Failed to initialize default password generator settings!  Error was:  {}", Log.d(e));
++			throw new RuntimeException(e);
++			//throw new ExceptionInInitializerError(e);
++		}
++
++		try {
++			excl = new HashSet<>();
++			excl.addAll(PasswordGenerator.getDefaultExclusionList());
++			excl.addAll(Arrays.asList('o', 'l', 'O', 'I', '1', '0'));
++			excl.addAll(Arrays.asList(PasswordGenerator.ALL_SPECIALS));
++			// some are visually okay to use, assuming that they'll be quoted
++			// or escaped in a programmatic use
++			excl.removeAll(Arrays.asList('%', '_', '+', ':', '~', '@', '*', '$'));
++			safe = new PassGenSettings (TYPE.BUILTIN, LABEL_SAFE, null,
++					"Intended to be easily usable across most shell environments (after quoting), and with minimal possible font confusion.",
++					BuildConfig.Mins.passLength,
++					BuildConfig.Mins.lowerLetters,
++					BuildConfig.Mins.capLetters,
++					1,
++					BuildConfig.Mins.numbers,
++					excl, false);
++			excl = null;
++		}
++		catch (EWizardException e) {
++			LOGGER.error("Failed to initialize safe password generator settings!  Error was:  {}", Log.d(e));
++			throw new RuntimeException(e);
++			//throw new ExceptionInInitializerError(e);
++		}
++
++		this.allpgs = new DefaultComboBoxModel<PassGenSettings>(new PassGenSettings[]{ defs, safe }) {
++			@Override public void addAll (Collection c) { throw new UnsupportedOperationException("allAll(c)"); }
++			@Override public void addAll (int index, Collection c) { throw new UnsupportedOperationException("allAll(i,c)"); }
++			@Override public void addElement (PassGenSettings anObject)
++			{
++				// there is no 'contains(foo)' in DefaultComboBoxModel, but
++				// getIndexOf forwards to Vector's
++				if (super.getIndexOf(anObject) == -1)
++					super.addElement(anObject);
++			}
++		};
++
++		this.scanning = new CountDownLatch(1);
++		this.active = defs;
++
++		// Don't hold up instance creation any longer (as this is being done
++		// during toplevel startup), do the potentially slow work in the background.
++		Jobs.work (task -> {
++			task.priority(Thread.MIN_PRIORITY);
++
++			// First, look at previously saved instances in the preferences.
++			String[] savedFiles = ConfigManager.getPreferences()
++					// 'all' is admittedly a misnomer; "all user defined
++					// collections of external settings" is too cumbersome
++					.get_genpass_all();
++			allentries:
++			for (String entry : savedFiles) {
++				String[] pieces = entry.split("|");
++				String label = pieces[0];
++				if (label.length() < 1)
++					continue allentries;
++				String path = pieces[1];
++				if (path.length() < 2)
++					continue allentries;
++				boolean underDataDir;
++				char t = path.charAt(0);
++				path = path.substring(1);
++
++				// This logic more or less follows that of prepareDefaults,
++				// except that we have a character flag for the pathname type
++				// rather than having to guess at it.
++				Path conf;
++				try {
++					conf = Paths.get(path);
++				}
++				catch (InvalidPathException badpath) {
++					LOGGER.error("", label, path);
++					continue allentries;
++				}
++				// most of this ought to be no-ops, and here only in the case
++				// the prefs.xml file has been manually edited or constructed
++				switch (t) {
++					case '=':
++						underDataDir = false;
++						if (!conf.isAbsolute()) {
++							// something bad
++						}
++						break;
++
++					case '+':
++						underDataDir = true;
++						conf = FileUtils.getConfigFile(conf.getFileName().toString());
++						break;
++
++					default:
++						LOGGER.error("", entry);
++						continue allentries;
++				}
++				if (!Files.isReadable(conf)) {
++					LOGGER.error("", conf);
++					continue allentries;
++				}
++
++				try {
++					PassGenSettings pgs = mkFromFile (conf, underDataDir);
++					allpgs.addElement(pgs);
++				}
++				catch (EWizardException nope) {
++					LOGGER.warn("Cannot load from '{}'", conf);
++					continue allentries;
++				}
++			}  // allentries loop
++
++			// Second, scan any files in the data directory.  Usually they'll
++			// be duplicates of the ones previously recorded in saved preferences,
++			// but this also lets users drop in new files and have them Just Work.
++			try {
++				Path cfdir = FileUtils.getConfigFile("");
++				List<Path> allconfs = FileUtils.glob (cfdir, "*.conf", Files::isRegularFile);
++				for (Path file : allconfs) {
++					task.checkInterrupt();
++					try {
++						// Technically wasteful to potentially (probably) scan
++						// the same files again, but as the PGS labels are not
++						// necessarily the same as the filenames, there's no
++						// other good way to get that information to compare.
++						PassGenSettings pgs = mkFromFile (file, true);
++						// This is idempotent for the allpgs instance:
++						allpgs.addElement(pgs);
++					}
++					catch (EWizardException nope) {
++						LOGGER.warn("Not loading from '{}'", file);
++					}
++				}
++			}
++			catch (IOException glob_no_directory_stream) {
++				LOGGER.error("Error while iterating over files with password generator settings!  Error was:  {}", Log.d(glob_no_directory_stream));
++				//throw new ExceptionInInitializerError(glob_no_directory_stream);
++			}
++			finally {
++				scanning.countDown();
++				scanning = null;
++			}
++
++			// That's all, folks!
++			return null;
++		});
++
++
++	}
++
++
++	// null if not found
++	// will block on the constructor's spawned thread if needed
++	public PassGenSettings
++	getSettings (String label)
++	{
++		// on paper, this is playing fast and loose with concurrency; in actual
++		// practice these threads will not do the bad thing
++		if (scanning != null)
++			try { scanning.await(); } catch (InterruptedException ie) { return null; }
++
++		PassGenSettings pgs = null;
++		// the ListModel implementations aren't amenable to stream calculations
++		// (would have been overkill for such small N, but nicely readable)
++		for (int i=0; i<allpgs.getSize(); i++) {
++			PassGenSettings p = allpgs.getElementAt(i);
++			if (label.equals(p.getLabel())) {
++				pgs = p;
++				break;
++			}
++		}
++		return pgs;
++	}
++
++
++	/**
++	 *
++	 * @param cfgMgr
++	 *            s
++	 * @param cliParamArg
++	 *            s
++	 * @param cliSafeArg
++	 *            s
++	 * @return the currently active settings
++	 * @throws EWizardException brace expression has nonpositive parameters,
++	 *         saved filename is invalid or contents are missing/garbled/etc
++	 */
++	public PassGenSettings
++	prepareDefaults (ConfigManager cfgMgr, String cliParamArg, String cliSafeArg)
++		throws EWizardException
++	{
++		// see getSettings
++		if (scanning != null)
++			try { scanning.await(); } catch (InterruptedException ie) { return null; }
++
++		String lastLabel = cfgMgr.get_genpass_name();
++		if (lastLabel == null || lastLabel.isEmpty())
++			lastLabel = LABEL_DEFAULTS;
++		PassGenSettings pgs = getSettings(lastLabel);
++//		ALL_PGS.setSelectedItem(pgs);
++
++
++		if (cliParamArg == null) {
++			// --genpass-param was not given, so use the saved or built-in settings
++
++		} else if (cliParamArg.charAt(0) == '!') {
++			// --genpass-param=!label
++			String label = cliParamArg.substring(1);
++			if (label.isEmpty()) {
++				LOGGER.warn("Empty name given to --genpass-param, ignoring.");
++			}
++			PassGenSettings probe = getSettings(label);
++			if (probe != null) {
++				LOGGER.info("Using saved settings '{}' for password generator.", label);
++				pgs = probe;
++			} else {
++				LOGGER.warn("Specified saved settings '{}' not found!", label);
++			}
++
++		} else if (cliParamArg.charAt(0) == '{') {
++			// --genpass-param={TOTAL,UPPER,LOWER,SPECIAL,DIGITS}
++			//try {
++				pgs = mkFromExpression(cliParamArg);
++				if (pgs == null)
++					throw EWizardException.LT (LOGGER, null, "Incorrect genpass-param expression, see --help-explain.");
++			//}
++			//catch (EWizardException badnumbers) {
++				//throw EWizardException.LT (LOGGER, badnumbers, "Expresion given to --genpass-param contains invalid numbers.");
++			//}
++			allpgs.addElement(pgs);
++
++		} else {
++			// --genpass-param=/path/to/external/settings/file
++			// --genpass-param=settings_file   [relative to app data location]
++			Path conffile;
++			try {
++				//SysUtils.getUserBaseDir().getFileSystem().getPath...?
++				conffile = Paths.get(cliParamArg);
++			}
++			catch (InvalidPathException badpath) {
++				throw EWizardException.LT (LOGGER, badpath, "Invalid filename given to --genpass-param.");
++			}
++
++			boolean underDataDir = !conffile.isAbsolute();
++			if (underDataDir) {
++				// let's say no subdirs for now, and only keep the filename
++				if (conffile.getNameCount() > 1) {
++					LOGGER.info("Stripping directory elements from --genpass-param");
++					conffile = conffile.getFileName();
++				}
++				// this API hasn't aged well...
++				conffile = FileUtils.getConfigFile(conffile.toString());
++			} else {
++				// external to the data dir
++				// anything special?
++			}
++			if (!Files.isReadable(conffile))
++				throw EWizardException.LT (LOGGER, null, "Filename given to --genpass-param cannot be read.");
++
++			//try {
++				pgs = mkFromFile (conffile, underDataDir);
++			//}
++			//catch (EWizardException e) {
++				//throw EWizardException.LT (LOGGER, null, "Filename given to --genpass-param is damaged.");
++			//}
++		}
++		assert pgs != null;
++
++		allpgs.addElement(pgs);
++
++		return setActive(pgs);
++	}
++
++
++	// FIXME some kind of listener may be needed
++	private PassGenSettings
++	setActive (PassGenSettings pgs)
++	{
++		this.active = pgs;
++		allpgs.setSelectedItem(active);
++		return active;
++	}
++
++
++	/**
++	 * Parses out a brace-enclosed expression and builds a new instance.
++	 *
++	 * <p>If the parsed settings do not meet the enforced minimum thresholds
++	 * for the current EW, this will bump them up.
++	 *
++	 * <p>Note that the exclusion list and the "may start with a special" for
++	 * the returned instance will be the builtin defaults.
++	 *
++	 * @param expr
++	 *            of the form {TOTAL,UPPER,LOWER,SPECIAL,DIGITS} with optional
++	 *            whitespace after the commas and inside the braces
++	 * @return a PGS instance ready to be used, or null on parse errors
++	 *         (including not starting/ending with curly braces)
++	 * @throws EWizardException (from PGS constructor) expression parsed
++	 *         correctly, but numerical values are negative
++	 */
++	private /*public*/ PassGenSettings
++	mkFromExpression (String expr)
++		throws EWizardException
++	{
++		// Also see afrlew.io.WzdMeta.newFromExpression
++
++		if (expr.charAt(0) != '{'
++		   || expr.charAt(expr.length()-1) != '}')
++		{
++			return null;
++		}
++		expr = expr.substring (1, expr.length()-1).trim();
++
++		int lChars, mLower, mUpper, mSpec, mNum;
++		Set<Character> excl = new HashSet<>(PasswordGenerator.getDefaultExclusionList());
++		boolean startsSpec = true;
++
++		try (Scanner sc = new Scanner(expr))
++		{
++			sc.useDelimiter(",\\s*");
++			// we don't test for "has input" here, we simply require all of them
++			lChars = sc.nextInt();
++			mUpper = sc.nextInt();
++			mLower = sc.nextInt();
++			mSpec = sc.nextInt();
++			mNum = sc.nextInt();
++		}
++		catch (java.util.NoSuchElementException | IllegalStateException bad)
++		{
++			return null;
++		}
++
++		return new PassGenSettings (TYPE.EXPRESSION, LABEL_EXPRESSION, null,
++				"Specified on the command line via a '--genpass-param' brace expression.",
++				lChars, mLower, mUpper, mSpec, mNum, excl, startsSpec);
++	}
++
++
++	/*
++	 * Loads a copy of the password generator settings from the given file,
++	 * which must exist.
++	 *
++	 * <p>If the loaded settings do not meet the enforced minimum thresholds
++	 * for the current EW, this will bump them up.
++	 *
++	 * @return a PGS instance ready to be used
++	 *
++	public static PassGenSettings
++	getSettings (Path loadFrom)
++	{
++		return getConfigured(loadFrom);
++	}*/
++
++
++	/*
++	 * Fetches the master copy of the password generator settings.
++	 *
++	 * <p>If needed, loads settings from the appropriate (optional) user
++	 * configuration file.  If the loaded settings do not meet the enforced
++	 * minimum thresholds for the current EW, this will bump them up.
++	 *
++	 * @return a PGS instance ready to be used
++	 *
++	public static PassGenSettings
++	getSettings()
++	{
++		if (SINGLETON == null) {
++			SINGLETON = getConfigured(FileUtils.getConfigFile(CONFFILENAME));
++		}
++		return SINGLETON;
++	}
++
++	*
++	 * Sets a new master copy of the password generator settings.
++	 *
++	 * <p>This can be used to preempt the default user configuration file.  If
++	 * a null is passed as the new master, then the next time {@link #getSettings()}
++	 * is called, the configuration file will be consulted again.
++	 *
++	 * @return the previous master copy (may be null)
++	 *
++	public static PassGenSettings
++	setDefaults (PassGenSettings master)
++	{
++		PassGenSettings prev = SINGLETON;
++		SINGLETON = master;
++		return prev;
++	}
++	private static PassGenSettings SINGLETON = null;*/
++
++
++
++	/**
++	 * Loads a password generator configuration from a file, falling back on
++	 * build-time defaults for anything unspecified in the file.
++	 *
++	 * @param conf
++	 *            No path operations will be done on this reference before
++	 *            opening the file; as such we assume it's already usable.
++	 * @param inDataDir
++	 *            x
++	 * @return a new instance, not yet added to the static collection
++	 * @throws EWizardException file is unreadable, syntax is damaged, or
++	 *         numerical parameters are nonsense; possibly not a PGS saved
++	 *         settings file at all
++	 */
++	private PassGenSettings
++	mkFromFile (Path conf, boolean inDataDir)
++		throws EWizardException
++	{
++		String label = conf.getFileName().toString();
++		String desc = "Specified on the command line via a '--genpass-param' file argument.";
++		// These are not enforced (here), but they make useful defaults in
++		// case the file doesn't contain every setting.
++		int lChars = BuildConfig.Mins.passLength,
++			mLower = BuildConfig.Mins.lowerLetters,
++			mUpper = BuildConfig.Mins.capLetters,
++			mSpec = BuildConfig.Mins.specialChars,
++			mNum = BuildConfig.Mins.numbers;
++		Set<Character> excl = new HashSet<>(PasswordGenerator.getDefaultExclusionList());
++		boolean startsSpec = true;
++
++		LOGGER.info("Loading saved password generator settings from '{}'", conf);
++		Properties map = new Properties();
++		try (BufferedReader reader = Files.newBufferedReader(conf,Charset.defaultCharset()))
++		{
++			try {
++				map.load(reader);
++			}
++			catch (IOException e) {
++				throw EWizardException.LT (LOGGER, e, "Damaged password generator config file");
++			}
++		}
++		catch (IOException e) {
++			throw EWizardException.LT (LOGGER, e, "Could not open '%s' for reading saved password generator config", conf);
++		}
++
++		String val = map.getProperty("NUM_CHARS");
++		if (val != null)
++			lChars = Integer.parseInt (val, 10);
++		val = map.getProperty("NUM_UPPER");
++		if (val != null)
++			mUpper = Integer.parseInt (val, 10);
++		val = map.getProperty("NUM_LOWER");
++		if (val != null)
++			mLower = Integer.parseInt (val, 10);
++		val = map.getProperty("NUM_SPECIAL");
++		if (val != null)
++			mSpec = Integer.parseInt (val, 10);
++		val = map.getProperty("NUM_NUMERALS");
++		if (val != null)
++			mNum = Integer.parseInt (val, 10);
++		val = map.getProperty("START_WITH_SPECIAL");  // transition old name
++		if (val != null)
++			startsSpec = Boolean.parseBoolean(val);
++		val = map.getProperty("MAY_START_WITH_SPECIAL");
++		if (val != null)
++			startsSpec = Boolean.parseBoolean(val);
++		val = map.getProperty("EXCLUSION_LIST");
++		if (val != null) {
++			for (char c : val.toCharArray())
++				excl.add(c);
++		}
++		val = map.getProperty("LABEL");
++		if (val != null)
++			label = val;
++		val = map.getProperty("DESCRIPTION");
++		if (val != null)
++			desc = val;
++
++		return new PassGenSettings (inDataDir ? TYPE.PATH_REL : TYPE.PATH_EXT,
++				label, conf, desc,
++				lChars, mLower, mUpper, mSpec, mNum, excl, startsSpec);
++	}
++
++
++	/*
++	 * Writes the current configuration to disk.  Returns the path of the
++	 * written file.
++	 * @throws RuntimeException if something goes seriously wrong
++	 *
++	public Path
++	saveConfiguration()
++	{
++		FileUtils.NamedOpenFile cf = null;
++
++		if (source == null) {
++			// this can only happen if --genpass-param was used with a brace
++			// expression and the GUI was still launched
++			cf = FileUtils.writingConfigFile(CONFFILENAME);
++			this.source = cf.pathname;
++
++		} else {
++			cf = new FileUtils.NamedOpenFile (source, Charset.defaultCharset());
++		}
++
++		return saveConfiguration(cf);
++	}*/
++
++
++	/*
++	 * d
++	 *
++	 * @param configfile
++	 *            Open writer will be a PrintWriter.
++	 * @throws
++	 *
++	private Path
++	saveConfiguration (PassGenSettings pgs )
++	{
++		FileUtils.NamedOpenFile cf =
++			new FileUtils.NamedOpenFile (source, Charset.defaultCharset());
++
++		StringBuilder ebuild = new StringBuilder(excluded.size());
++		for (Character c : excluded)
++			ebuild.append(c);
++		String excludedcopy = ebuild.toString();
++
++		// If it weren't such a pain to constantly be doing lookups, we'd
++		// just keep one of these around instead of half a dozen different
++		// integers.  As is, we use properties only for convenient I/O.
++		Properties map = new Properties();
++
++		// Names here are from the pre-3.4 custom password.cfg file.
++		map.setProperty ("NUM_CHARS", Integer.toString(lenChars, 10));
++		map.setProperty ("NUM_UPPER", Integer.toString(mUpper, 10));
++		map.setProperty ("NUM_LOWER", Integer.toString(mLower, 10));
++		map.setProperty ("NUM_SPECIAL", Integer.toString(mSpecial, 10));
++		map.setProperty ("NUM_NUMERALS", Integer.toString(mDigit, 10));
++		map.setProperty ("MAY_START_WITH_SPECIAL", Boolean.toString(mayStartWithSpecial));
++		map.setProperty ("EXCLUSION_LIST", excludedcopy);
++
++		try (PrintWriter w = configfile.writer) {
++			map.store (w, Constants.EWFULL + " " + Constants.VERSION);
++			w.println("# This file may be edited while EW is not running.");
++			w.println("# Lines may be deleted to revert to the defaults for this edition.");
++			w.println("# See the User's Guide and --help-explain for more");
++			w.println("# about custom generator settings.");
++		}
++		catch (IOException e) {
++			LOGGER.error("Mangled password generator config file:  {}", Log.d(e));
++			throw new RuntimeException(e);
++		}
++
++		return configfile.pathname;
++	}*/
++
++
++}
++
+diff --git a/src/main/afrlew/genpass/PasswordGenerator.java b/src/main/afrlew/genpass/PasswordGenerator.java
+--- a/src/main/afrlew/genpass/PasswordGenerator.java
++++ b/src/main/afrlew/genpass/PasswordGenerator.java
+@@ -6,6 +6,8 @@
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
++import java.util.List;
++import java.util.Objects;
+ import java.util.concurrent.ArrayBlockingQueue;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.TimeUnit;
+@@ -46,17 +48,39 @@
+ 			')', ';', '\'', '\"', ',', '<', '>', '?', '/', '\\', '{', '}',
+ 			'|', ' ' };
+ 
+-	private static final int FALLBACK_WAIT_SECONDS = 8;
+-	private static final int FALLBACK_WAIT_LOOPS = 10;
++	/**
++	 * Returns the subset of {@code PasswordGenerator.ALL_SPECIALS} to use as
++	 * the starting point of new / unspecified PGS instances.
++	 *
++	 * <p>Package private.
++	 *
++	 * @return a new List on each call (treat this instance as fixed size /
++	 *         immutable, for safety)
++	 */
++	static List<Character>
++	getDefaultExclusionList()
++	{
++		// NOTE that this must be a subset of PasswordGenerator.ALL_SPECIALS
++		// in practice, otherwise things are going to go off the rails
++		return Arrays.asList(
++				'%', '~', '!', '@', '#', '$', '^', '&', '*', '(', ')', ';',
++				'\'', '\"', ',', '<', '>', '?', '/', '\\', '{', '}', '|', ' ');
++	}
++
++	// These should no longer "matter" in any practical sense.
++	private static final int BACKCOMPAT_WAIT_SECONDS = 8;
++	private static final int BACKCOMPAT_WAIT_LOOPS = 10;
+ 
+ 	private static final Logger LOGGER = Log.getFor (Log.Cat.PASSGEN, PasswordGenerator.class);
+ 	private static final int LOWER = 0, UPPER = 1, DIGIT = 2, SPECIAL = 3;
+ 
+ 	private enum GenState { UNKNOWN, INTERRUPT, LOOPY, DONE }
+ 
++
+ 	private final SecureRandom     rng;
+ 	// We want a SynchronousQueue but don't actually need anything that strict.
+ 	private final BlockingQueue<GenState>  quay = new ArrayBlockingQueue<> (1, true);
++	// There's no good way to enforce "treat this as immutable" with the current API:
+ 	private       PassGenSettings  settings;
+ 
+ 	// The set of allowed characters.
+@@ -80,7 +104,8 @@
+ 	 * randomness.
+ 	 *
+ 	 * @param settings
+-	 *            previously configured generator parameters
++	 *            previously configured generator parameters, should be treated
++	 *            as read-only by the generator
+ 	 * @param rngsrc
+ 	 *            for fetching a PRNG
+ 	 * @throws WzdException if any of the thresholds are silly (e.g, negative
+@@ -99,7 +124,7 @@
+ 			throw new WzdException(e.getMessage(), e);
+ 		}
+ 
+-		this.settings = settings;
++		this.settings = Objects.requireNonNull(settings);
+ 		this.allowed = null;
+ 
+ 		settings.addChangeListener(this);
+@@ -112,7 +137,7 @@
+ 	{
+ 		// This is fired by PassGenSettings when the set of potential
+ 		// characters has changed.  This could be fired quite often, so keep
+-		// it fast.  We'll just reconstruct the new set next time around.
++		// this fast.  We'll just reconstruct the new set next time around.
+ 		this.allowed = null;
+ 	}
+ 
+@@ -332,7 +357,7 @@
+ 					numDigits, minsByType[DIGIT], isAcceptable));
+ 			} while (!isAcceptable
+ 				&& !Thread.currentThread().isInterrupted()
+-				&& ++loops[0] < FALLBACK_WAIT_LOOPS);
++				&& ++loops[0] < BACKCOMPAT_WAIT_LOOPS);
+ 
+ 			quay.add (isAcceptable ? GenState.DONE : GenState.LOOPY);
+ 		}
+@@ -398,7 +423,7 @@
+ 		gent.start();
+ 		GenState result;
+ 		try {
+-			result = quay.poll (FALLBACK_WAIT_SECONDS, TimeUnit.SECONDS);
++			result = quay.poll (BACKCOMPAT_WAIT_SECONDS, TimeUnit.SECONDS);
+ 			if (result == null) {
+ 				// timeout
+ 				gent.interrupt();
+@@ -436,11 +461,11 @@
+ 	}
+ 
+ 
+-	public PassGenSettings
++/*	public PassGenSettings
+ 	getCurrentSettings()
+ 	{
+ 		return settings;
+-	}
++	}*/
+ 
+ 
+ 	/**
+diff --git a/src/main/afrlew/ui/FileInfoDialog.java b/src/main/afrlew/ui/FileInfoDialog.java
+--- a/src/main/afrlew/ui/FileInfoDialog.java
++++ b/src/main/afrlew/ui/FileInfoDialog.java
+@@ -79,7 +79,7 @@
+  * telling where.
+  */
+ public class FileInfoDialog extends JDialog
+-		implements ActionListener, ClipboardOwner
++		implements ActionListener
+ {
+ 	private static final Logger LOGGER = Log.getFor(FileInfoDialog.class);
+ 
+@@ -647,12 +647,9 @@
+ 	public void
+ 	actionPerformed (ActionEvent e)
+ 	{
+-		ClipboardUtil.getClipboard().setContents(new StringSelection(
+-				e.getActionCommand()), this);
++		ClipboardUtil.copyNotSensitive(e.getActionCommand());
+ 	}
+ 
+-	@Override
+-	public void lostOwnership (Clipboard clipboard, Transferable contents) {}
+ 
+ 	private static final long serialVersionUID = 2147292402445575589L;
+ }
+diff --git a/src/main/afrlew/ui/KeyStorePanel.java b/src/main/afrlew/ui/KeyStorePanel.java
+--- a/src/main/afrlew/ui/KeyStorePanel.java
++++ b/src/main/afrlew/ui/KeyStorePanel.java
+@@ -325,7 +325,7 @@
+ 	        if (key == null) {
+ 	        	LOG.warn("Key was null");
+ 	        	JOptionPane.showMessageDialog(this,
+-	        			"The private key could not be loaded.",
++	        			"The private key could not be loaded.",  // FIXME crappy message
+ 	        			"Error",
+ 	        			JOptionPane.ERROR_MESSAGE);
+ 	        } else if (!(key instanceof PrivateKey)) {
+diff --git a/src/main/afrlew/ui/bits/WzdHTMLPane.java b/src/main/afrlew/ui/bits/WzdHTMLPane.java
+--- a/src/main/afrlew/ui/bits/WzdHTMLPane.java
++++ b/src/main/afrlew/ui/bits/WzdHTMLPane.java
+@@ -42,6 +42,7 @@
+ import afrlew.Constants;
+ import afrlew.Log;
+ import afrlew.ui.UIU;
++import afrlew.util.desktop.ClipboardUtil;
+ import afrlew.util.desktop.DesktopProvider;
+ import afrlew.wizard.ii.InformInquire;
+ 
+@@ -194,15 +195,24 @@
+ 			return false;
+ 		}
+ 
++		// TODO:  once we have JDK source again, look to see if there are any existing
++		// l10n keys for "Copy" here (and "Paste" in FileListTransferHandler).
++		final int DO_OKAY = 1, DO_COPY = 2, DO_CANCEL = 3;
+ 		String okText = UIManager.getString("OptionPane.okButtonText");
+-		if (InformInquire.inquire (that, "Launch web browser?",
++		// if (InformInquire.inquire (that, "Launch web browser?",   .... != -1 return true
++		switch (InformInquire.inquire (that, "Launch web browser?",
+ 				/*default=*/-1,
+ 				String.format (CONFIRM_BROWSER_FMT, okText, uri),
+-				1,    okText,
+-				2,    UIManager.getString("OptionPane.cancelButtonText"))
+-				!= 1)
++				DO_OKAY,    okText,
++				DO_COPY,    "Copy URL to clipboard",
++				DO_CANCEL,  UIManager.getString("OptionPane.cancelButtonText")))
+ 		{
+-			return true;
++			case DO_OKAY:  break;
++			case DO_COPY:
++				ClipboardUtil.copyNotSensitive(uri.toASCIIString());
++				return true;
++			default:
++				return true;
+ 		}
+ 
+ 		LOGGER.info("Launching web browser:  {}", uri);
+diff --git a/src/main/afrlew/util/CertUtils.java b/src/main/afrlew/util/CertUtils.java
+--- a/src/main/afrlew/util/CertUtils.java
++++ b/src/main/afrlew/util/CertUtils.java
+@@ -473,7 +473,7 @@
+ 					} else {
+ 						vals = String.valueOf(val);
+ 					}
+-					//System.err.println(">>> " + type + " is " + rdn.getValue() + " also " + vals);
++					//System.err.format(">>> %s is <<%s>> also <<%s>>%n", type, rdn.getValue(), vals);
+ 					return type + '=' + vals;
+ 				})
+ 				.collect(Collectors.toList());
+diff --git a/src/main/afrlew/util/EscrowKeyManager.java b/src/main/afrlew/util/EscrowKeyManager.java
+--- a/src/main/afrlew/util/EscrowKeyManager.java
++++ b/src/main/afrlew/util/EscrowKeyManager.java
+@@ -315,8 +315,11 @@
+ 			// visual result of HTML, but it will help the line wrapping
+ 			// make better decisions.
+ 			String c = CertUtils.extractIssuer(cert).trim();
++			//System.err.format("!!!! extracted <<%s>>%n", c);
+ //			c = c.replace (",", ", ");   already done in extractIssuer now
++			// maybe use encodeHTML here?
+ 			c = StringUtils.wrapHTML(c);   // appends a <br> at the end
++			//System.err.format("!!!! wrapped HTML<<%n%s%n>>%n", c);
+ 			displayIDs.add (c + fingerprint);
+ 		}
+ 
+diff --git a/src/main/afrlew/util/FileUtils.java b/src/main/afrlew/util/FileUtils.java
+--- a/src/main/afrlew/util/FileUtils.java
++++ b/src/main/afrlew/util/FileUtils.java
+@@ -15,51 +15,11 @@
+ import java.net.URL;
+ import java.nio.charset.Charset;
+ import java.nio.charset.StandardCharsets;
+-import java.nio.file.DirectoryIteratorException;
+-import java.nio.file.DirectoryNotEmptyException;
+-import java.nio.file.DirectoryStream;
+-import java.nio.file.FileSystem;
+-import java.nio.file.FileSystemNotFoundException;
+-import java.nio.file.FileSystems;
+-import java.nio.file.FileVisitOption;
+-import java.nio.file.FileVisitResult;
+-import java.nio.file.FileVisitor;
+-import java.nio.file.Files;
+-import java.nio.file.InvalidPathException;
+-import java.nio.file.LinkOption;
+-import java.nio.file.OpenOption;
+-import java.nio.file.Path;
+-import java.nio.file.Paths;
+-import java.nio.file.SimpleFileVisitor;
+-import java.nio.file.StandardCopyOption;
+-import java.nio.file.StandardOpenOption;
+-import java.nio.file.attribute.AclEntry;
+-import java.nio.file.attribute.AclEntryFlag;
+-import java.nio.file.attribute.AclEntryPermission;
+-import java.nio.file.attribute.AclEntryType;
+-import java.nio.file.attribute.AclFileAttributeView;
+-import java.nio.file.attribute.BasicFileAttributes;
+-import java.nio.file.attribute.FileAttribute;
+-import java.nio.file.attribute.PosixFileAttributeView;
+-import java.nio.file.attribute.PosixFilePermission;
+-import java.nio.file.attribute.PosixFilePermissions;
+-import java.nio.file.attribute.UserPrincipal;
+-import java.nio.file.attribute.UserPrincipalLookupService;
++import java.nio.file.*;
++import java.nio.file.attribute.*;
+ import java.security.GeneralSecurityException;
+ import java.security.SecureRandom;
+-import java.util.ArrayList;
+-import java.util.Arrays;
+-import java.util.Collections;
+-import java.util.EnumSet;
+-import java.util.HashMap;
+-import java.util.LinkedList;
+-import java.util.List;
+-import java.util.ListIterator;
+-import java.util.Locale;
+-import java.util.Map;
+-import java.util.Objects;
+-import java.util.Set;
+-import java.util.WeakHashMap;
++import java.util.*;
+ import java.util.concurrent.ExecutionException;
+ import java.util.function.Consumer;
+ import java.util.function.Predicate;
+@@ -350,7 +310,7 @@
+ 					Files.move (from, to, StandardCopyOption.REPLACE_EXISTING);
+ 					Thread.sleep(10);   // and about whether the file is still there
+ 				}
+-				catch (java.nio.file.FileAlreadyExistsException bug8021384) {
++				catch (FileAlreadyExistsException bug8021384) {
+ 					// https://bugs.openjdk.java.net/browse/JDK-8021384
+ 					// "FileAlreadyExistsException when use Files.move with REPLACE_EXISTING"
+ 					//
+@@ -585,17 +545,19 @@
+ 
+ 	/**
+ 	 * Consolidates all of the string-into-path steps, resolving the given
+-	 * name against the user base directory and normalizing the result.
++	 * name against the user base directory and
++	 * {@linkplain Path#normalize() normalizing} the result.
+ 	 *
+ 	 * @param filename
+ 	 *            Must not be {@code null}, should be not dumb.
+-	 * @return a normalized Path instance
++	 * @return a normalized absolute Path instance
+ 	 * @throws InvalidPathException if {@code filename} cannot be used (will
+ 	 *         already have been logged to general category)
+ 	 * @see SysUtils#getUserBaseDir()
+ 	 */
+ 	public static Path
+ 	sanePath (String filename)
++			throws InvalidPathException
+ 	{
+ 		try {
+ 			return SysUtils.getUserBaseDir().resolve(filename.trim()).normalize();
+@@ -662,7 +624,7 @@
+ 	 * <dt>+foo</dt>
+ 	 *   <dd>Normal file, opened for appending.</dd>
+ 	 * <dt>./+foo</dt>
+-	 *   <dd>In the case of an automatically-prepended {@code ./}, the special
++	 *   <dd>In the case of an automatically-prepended {@code "./"}, the special
+ 	 *   {@code +} will still be detected.  This does not apply to a file as
+ 	 *   part of an actual path given by the user, e.g.,
+ 	 *   {@code dir1/dir2/dir3/+foo.txt} will <em>not</em> activate appending,
+@@ -694,7 +656,7 @@
+ 		// CLI parsing of "foo" and "+bar" can result in "./foo" and "./+bar"
+ 		// depending on the control flow we took to get here, so incorporate
+ 		// that when checking for empty names.
+-		final String prefixDotSlash = "." + java.io.File.separator;
++		final String prefixDotSlash = "." + File.separator;
+ 		if (inDotSlash = name.startsWith(prefixDotSlash)) {
+ 			// We need to detect this condition, but we no longer make use of
+ 			// the information after this point.
+@@ -714,8 +676,7 @@
+ 			// Use a name which will make sense in log/error messages.  This
+ 			// doesn't actually get opened unless restream()... so don't do
+ 			// that.  Maybe a null here instead?
+-			Path stdout = Paths.get("standard output");
+-			nof = new NamedOpenFile(stdout);
++			nof = new NamedOpenFile(Paths.get("NOF standard output"));
+ 			nof.writer = new PrintWriter (new NonClosingOutputStream(System.out), true);
+ 			return nof;
+ 		}
+@@ -790,17 +751,25 @@
+ 	 *            {@linkplain DesktopProvider#getApplicationDataPath(Boolean) application data path}.
+ 	 *            (The {@code config-*} directory name will be unconditionally
+ 	 *            added to this path before resolving the given {@code name}.)
++	 *            The first {@code appDir} will be cached for the rest of the
++	 *            session, which is kinda janky.
+ 	 * @param name
+-	 *            Base name of the configuration file.
++	 *            Base name of the configuration file.  Must not be {@code null},
++	 *            but an empty string is allowed (will return the application
++	 *            data path as a Path instance).
+ 	 * @return a Path to that file
+-	 * @see #writingConfigFile(String)
++	 * @see #writingConfigFile(String, Charset...)
+ 	 */
+ 	public static Path
+ 	getConfigFile (Path appDir, String name)
+ 	{
+ 		try {
+ 			if (_CFPATH == null) {
+-				_CFPATH = appDir.resolve ("config-" + Constants.CONFIG_TAG);
++				synchronized (FileUtils.class) {
++					if (_CFPATH == null) {
++						_CFPATH = appDir.resolve ("config-" + Constants.CONFIG_TAG);
++					}
++				}
+ 			}
+ 			return _CFPATH.resolve(name);    // is okay for name to be empty
+ 		}
+@@ -818,10 +787,10 @@
+ 
+ 	/**
+ 	 * All the same behavior of
+-	 * {@link FileUtils#getConfigFile(String) getConfigFile}
++	 * {@link #getConfigFile(String) getConfigFile}
+ 	 * with these additions:  the named file is created along with any needed
+ 	 * parent directories.  If the file already exists, it is deleted and
+-	 * recreated.  If any errors occur, a null is returned.
++	 * recreated.  If any errors occur, a {@code null} is returned.
+ 	 *
+ 	 * <p>The buffered writer is opened with the optional character set, or
+ 	 * US-ASCII if unspecified.
+@@ -869,8 +838,7 @@
+ 		private static final boolean debugging = Constants.isDebug("io.outfile");
+ 		private static final PrintStream debug = Constants.toggledErr("io.outfile");
+ 
+-		/** The {@linkplain Path#toRealPath(java.nio.file.LinkOption...) real path}
+-		 *  of this file. */
++		/** The {@linkplain Path#toRealPath(LinkOption...) real path} of this file. */
+ 		public final Path         pathname;
+ 		public       PrintWriter  writer;
+ //		private   OutputStream  need to hold a copy and redo restream
+@@ -882,15 +850,20 @@
+ 		 * {@linkplain Files#newBufferedWriter(Path, Charset, OpenOption...) opens
+ 		 * a buffered Writer} for that path.
+ 		 *
++		 * <p>Any problems normally resulting in an {@code IOException} will
++		 * store the exception instead; see {@link #checkOpen()}.
++		 *
+ 		 * @param p
+ 		 *            The path to open for writing.  (If not absolute, {@code p}
+ 		 *            will be resolved against the user base location.)
+ 		 * @param cs
+-		 *            Character set for opening the underlying writer.
++		 *            Character set for opening the underlying writer.  May
++		 *            not be {@code null}.
+ 		 * @param opts
+ 		 *            Optional options (ha) for opening the underlying writer.
+ 		 */
+-		public NamedOpenFile (Path p, Charset cs, OpenOption... opts) {
++		public NamedOpenFile (Path p, Charset cs, OpenOption... opts)
++		{
+ 			PrintWriter pw = null;
+ 			try {
+ 				p = SysUtils.getUserBaseDir().resolve(
+@@ -916,7 +889,7 @@
+ 						@Override public void close()   // throws IOException
+ 						{
+ 							if (this.unclosed) {
+-								debug.println("NOF calling close for " + NamedOpenFile.this.pathname.toString());
++								debug.println("NOF calling close for " + NamedOpenFile.this.pathname);
+ 								super.close();
+ 								this.unclosed = false;
+ 							}
+@@ -937,15 +910,23 @@
+ 			this.pathname = fake;
+ 			this.writer = null;
+ 		}
+-		public OutputStream restream() throws IOException {
++
++		public OutputStream
++		restream()
++			throws IOException
++		{
+ 			FileUtils.close_seriously(writer);
+ 			return Files.newOutputStream(pathname);
+ 		}
++
+ 		/**
+ 		 * If any exceptions were thrown during the initial open, this will
+ 		 * re-throw them.
+ 		 */
+-		public void checkOpen() throws IOException {
++		public void
++		checkOpen()
++			throws IOException
++		{
+ 			if (failure != null)
+ 				throw failure;
+ 		}
+@@ -963,8 +944,10 @@
+ 	 * @param filter
+ 	 *            Optional filter to apply to each existing directory entry.
+ 	 *            May be null to pass through all entries.
+-	 * @return a non-null but possibly empty List
++	 * @return a non-null but possibly empty List; entries will have been
++	 *         resolved against the given directory
+ 	 * @throws IOException anything from {@link Files#newDirectoryStream(Path, String)}
++	 *         including its iteration
+ 	 */
+ 	public static List<Path>
+ 	glob (Path dir, String pattern, Predicate<Path> filter)
+@@ -1493,7 +1476,7 @@
+ 				for (int i=0; i<name.length(); i++) {
+ 					char c = name.charAt(i);
+ 					if (bad_portable_chars.indexOf(c) != -1) {
+-						throw new java.nio.file.InvalidPathException (name,
++						throw new InvalidPathException (name,
+ 								String.format("Problematic %s character", Character.getName(c)),
+ 								i);
+ 					}
+@@ -1515,7 +1498,7 @@
+ 					}
+ 				}
+ 			}
+-			catch (java.nio.file.InvalidPathException badpath) {
++			catch (InvalidPathException badpath) {
+ 				String warning_format =
+ 						"Bad potential filename ({}), retrying with '{}'.";
+ 
+@@ -1704,7 +1687,7 @@
+ 	 *
+ 	 * <p>The {@code callback} function is described by {@link PathVisit},
+ 	 * called by the traversal function
+-	 * {@link java.nio.file.Files#walkFileTree Files.walkFileTree}.  The value
++	 * {@link Files#walkFileTree Files.walkFileTree}.  The value
+ 	 * returned from the supplied function is added to the returned list
+ 	 * if-and-only-if the value is not null.  (Quick lambda paste:<pre>
+ 	 * (path, attrs, isFile)</pre>.)
+diff --git a/src/main/afrlew/util/StringUtils.java b/src/main/afrlew/util/StringUtils.java
+--- a/src/main/afrlew/util/StringUtils.java
++++ b/src/main/afrlew/util/StringUtils.java
+@@ -1,5 +1,6 @@
+ package afrlew.util;
+ 
++import java.lang.reflect.Array;
+ import java.nio.file.Path;
+ import java.text.NumberFormat;
+ import java.text.ParseException;
+@@ -582,6 +583,10 @@
+ 				case '>':  return "&gt;".chars();
+ 				case '&':  return "&amp;".chars();
+ 				case '"':  return "&quot;".chars();
++				// note that "&equals" requires HTML5, so even though it ought
++				// to be safe to pass through, we'll force a character entity
++				// below, instead.
++				case '=':  change = true; break;
+ 				case ' ':
+ 					if (forceNonbreakingSpaces) {
+ 						return "&nbsp;".chars();
+@@ -822,6 +827,198 @@
+ 
+ 
+ 	/**
++	 * Relevant methods are {@link #dims()}, {@link #array(), and
++	 * {@link #arrayAs(Class) arrayAs(token)}.
++	 */
++	// records would be nice here, maybe a Pair if we want to introduce
++	// the dependency
++	public static final class ArrayingResult<A>
++	{
++		private final int     dimensions;
++		private final A       data;
++
++		private ArrayingResult (Class<A> inference, int d, A a) { this.dimensions = d; this.data = a; }
++		/** Probably returns 1 or 2 for most work.  Won't be zero. */
++		public int dims() { return dimensions; }
++		/** Typecasts the array to the given type.  The same reference is returned on each call. */
++		public <U> U arrayAs (Class<U> token) { return token.cast(data); }
++		/** Returns the array (same reference on each call). */
++		public A array() { return data; }
++	}
++
++	/**
++	 * Wrapper for {@link #unToStringArrays(Class, Class, Function, String) unToStringArrays}
++	 * doing no transformations of string elements, and assuming a single-dimension array.
++	 */
++	public static ArrayingResult<String[]>
++	unToStringArrays (String str)
++	{
++		return unToStringArrays (String[].class, String.class, Function.identity(), str);
++	}
++
++	/**
++	 * Attempts to reverse the transformation of
++	 * {@link Arrays#deepToString(Object[]) deepToString()}
++	 * for nested/multidimensional arrays of arbitrary depth and type.
++	 *
++	 * <p>Be aware that if any single element of the original array produced
++	 * toString output containing square brackets or commas, then this will
++	 * fail.  (The {@code deepToString} behavior is fine for human debugging
++	 * and very simple serialization, but is unsuitable for string storage of
++	 * arbitrary data.  If the original array needs to be that flexible, then
++	 * this is the wrong format; use something like JSON or XML instead.)
++	 *
++	 * <p>Largely copied from https://stackoverflow.com/a/52726915/1824182 by
++	 * "potato" (user 2194661) under license CC BY-SA 4.0; handling of arbitrary
++	 * ouput types is added.
++	 *
++	 * @param <Array>
++	 *            Expected type of the parsed array, as per {@code aType}.
++	 * @param <Element>
++	 *            Specified type of the individual elements, as per {@code eType}.
++	 * @param aType
++	 *            Token for the expected type of the entire parsed array, e.g.,
++	 *            {@code Foo[][].class}.  This can be Object or Object[] if
++	 *            calling code needs to do further inspection on an uncertain
++	 *            array, but that shouldn't ever happen for EW.
++	 * @param eType
++	 *            Token for the type of the returned array elements.
++	 * @param parse
++	 *            A function to parse each element from its string representation
++	 *            back into a value of type {@code Element/eType}.
++	 * @param str
++	 *            The output of a previous {@code deepToString} call.  Empty or
++	 *            null inputs will trigger exceptions.  Strings of the incorrect
++	 *            format will trigger exceptions.
++	 * @return bundle of dimension and array data
++	 */
++	// FIXME unfuck empty / null inputs
++	public static <Array,Element> ArrayingResult<Array>
++	unToStringArrays (final Class<Array> aType, final Class<Element> eType,
++			final Function<String,Element> parse, String str)
++	{
++		int d = 0;
++		for (int i = 0; i < str.length(); i++)
++			if (str.charAt(i) == '[')
++				d++;
++			else break;
++		str = str.substring (d, str.length() - d);
++		Object a = utsaAux (eType, parse, str, d);
++		return new ArrayingResult<Array>(aType, d, aType.cast(a));
++	}
++
++	private static <Element> Object
++	utsaAux (final Class<Element> eType, final Function<String,Element> parse, String str, int dim)
++	{
++		String[] s;
++
++		if (dim == 1) {
++			s = str.split(", ");    // could use utsaGetSep(0) for more generalization
++			return Arrays.stream(s)
++				.map (parse)
++				.toArray (n -> (Element[]) Array.newInstance (eType, n));
++		}
++
++		s = str.split(utsaGetSep(dim));
++		int[] lengths = new int[dim];
++		lengths[0] = s.length;
++		Object arr = Array.newInstance (eType, lengths);
++
++		for (int i = 0; i < s.length; i++)
++			Array.set (arr, i, utsaAux (eType, parse, s[i], dim - 1));
++
++		return arr;
++	}
++
++	private static String
++	utsaGetSep (int dim)
++	{
++		String sep = ", ";   // as per Arrays.deepToString description
++
++		for (int i = 0; i < dim; i++)
++			sep = ']' + sep + "\\[";    // take that, garbage collector!
++
++		return sep;
++	}
++
++
++	/*
++	 * dfdf
++	 *
++	 * <p>This very nearly got called {@code "gnirtSoTpeed"} but I found some
++	 * restraint at the last moment.  Largely copied from
++	 * https://stackoverflow.com/a/22428926/1824182
++	 *
++	 * ASSUMES 2-D ARRAYS
++	 *
++	 * @param type
++	 *            Class token for converting the output.
++	 * @param parse
++	 *            Will be called on each element of the output array.
++	 * @param str
++	 *            Must be the output from a previous call to
++	 *            {@link java.util.Arrays#deepToString(Object[]) Arrays.deepToString()};
++	 *            minimal error checking is done on this input.
++	 * @return null input is null result, else a populated array
++	 *
++	public static <T> T[][]
++	splitToArrays (Class<T> type, Function<String,T> parse, String str)
++	{
++		// some safety checking
++		if (str == null)
++			return null;
++		if (str.startsWith("[Ljava.lang.String")) {
++			System.err.println("00000000000000000000000000000000 splitToArrays given a binary rep?");
++			return null;
++		}
++
++		int rows = 0;
++		//str.chars() and a counter, after JAVA9:
++		// Note that this assumes a 2D array.
++		for (int i = 0; i < str.length(); i++) {
++			if (str.charAt(i) == '[') {
++				rows++;
++			}
++		}
++		rows--;
++		// The above should instead count the leading '[' to determine the
++		// dimensionality, and then '-=' by that much.  Kludge for now:
++		if (--rows == 0) {
++			// was a single dimensional array to start with
++			rows = 1;
++		}
++
++		int cols = 0;
++		for (int i = 0; ; i++) {
++			if (str.charAt(i) == ',') {
++				cols++;
++			}
++			if (str.charAt(i) == ']') {
++				break;
++			}
++		}
++		cols++;
++
++		str = str.replaceAll("\\[", "").replaceAll("\\]", "");
++
++		String[] strflat = str.split(", ");
++		//String[][] out = new String[row][col];
++		// continue to assume 2D until we need to change it
++		T[][] out = (T[][]) Array.newInstance (type, rows, cols);
++
++		int j = -1;
++		for (int i = 0; i < strflat.length; i++) {
++			if (i % cols == 0) {
++				j++;
++			}
++			out[j][i % cols] = parse.apply( strflat[i] );
++			//System.out.println(s1[i] + "\t" + j + "\t" + i % col);
++		}
++		return out;
++	}*/
++
++
++	/**
+ 	 * Pads a string out to a minimum length by prefixing.
+ 	 *
+ 	 * <p>If the given string {@code STR} is already {@code WIDTH} code points
+diff --git a/src/main/afrlew/util/desktop/ClipboardUtil.java b/src/main/afrlew/util/desktop/ClipboardUtil.java
+--- a/src/main/afrlew/util/desktop/ClipboardUtil.java
++++ b/src/main/afrlew/util/desktop/ClipboardUtil.java
+@@ -16,6 +16,7 @@
+ import afrlew.Log;
+ import afrlew.wizard.prefs.ConfigManager;
+ 
++// TODO:  look at the builtin support in TransferHandler and DefaultEditorKit
+ public class ClipboardUtil implements ClipboardOwner
+ {
+ 	private static final class EraserTimerTask extends TimerTask
+@@ -120,6 +121,28 @@
+ 
+ 
+ 	/**
++	 * Performs a plain copy to the system clipboard.  No overwriting will be
++	 * done, and nothing will happen when subsequent copying occurs (the "lost
++	 * ownership" call).
++	 *
++	 * <p>Almost named this method 'copyInsensitive'.
++	 *
++	 * @param text
++	 *            May technically be {@code null} to clear the clipboard, I think.
++	 */
++	public static void
++	copyNotSensitive (final String text)
++	{
++		// This will boil down to 'CLIPBOARD.setContents()' except in the case
++		// when a previous copy has been done and a timer is already ticking.
++		// Replacing the contents would then mean that they get erased instead;
++		// we'll go through this route instead to safely wave off the ticking
++		// cancel timer.
++		copySensitive (0, null, new StringSelection(text), null, null);
++	}
++
++
++	/**
+ 	 * A wrapper around
+ 	 * {@link ClipboardUtil#copySensitive(int, ClipboardOwner, Transferable, IntConsumer, IntConsumer)}
+ 	 * after creating a StringSelection around <b>text</b>.
+diff --git a/src/main/afrlew/util/task/JobManager.java b/src/main/afrlew/util/task/JobManager.java
+--- a/src/main/afrlew/util/task/JobManager.java
++++ b/src/main/afrlew/util/task/JobManager.java
+@@ -12,7 +12,9 @@
+ {
+ 	/**
+ 	 * This kludge is {@link java.util.concurrent.Callable Callable},
+-	 * but exposes utility methods to the client.
++	 * but exposes utility methods to the client.  The {@code call()}
++	 * method (with or without a {@code CallablePlus} parameter) is
++	 * declared to throw Exception.
+ 	 *
+ 	 * <p>The usual lambda syntax is<pre>
+ 	 *   task -> {
+diff --git a/src/main/afrlew/wizard/CommandLine.java b/src/main/afrlew/wizard/CommandLine.java
+--- a/src/main/afrlew/wizard/CommandLine.java
++++ b/src/main/afrlew/wizard/CommandLine.java
+@@ -1006,6 +1006,9 @@
+ 	 * @param launchJarName
+ 	 *            name of the user-visible JAR file, to be used in parsing
+ 	 *            error messages and {@code --help} output
++	 * @param localexit
++	 *            see 'localexit' member variable in CLI.java around line 40;
++	 *            control flow never reaches any actual 'throw' operations
+ 	 * @return all elements of {@code argv} which were not options (may be empty)
+ 	 * @throws IllegalArgumentException to report errors to the user
+ 	 */
+@@ -1110,7 +1113,7 @@
+ 			}
+ 		}
+ 
+-		// Getopt has no "restart".
++		// Getopt has no reinitialization API, just do this instead.
+ 		go = new Getopt (launchJarName, argv, _optstring, _longopts);
+ 		Option foundAction = null;
+ 
+diff --git a/src/main/afrlew/wizard/CommandLineMode.java b/src/main/afrlew/wizard/CommandLineMode.java
+--- a/src/main/afrlew/wizard/CommandLineMode.java
++++ b/src/main/afrlew/wizard/CommandLineMode.java
+@@ -26,6 +26,7 @@
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Comparator;
++import java.util.HashSet;
+ import java.util.LinkedList;
+ import java.util.List;
+ import java.util.ListIterator;
+@@ -1077,7 +1078,7 @@
+ 			pgs.setLeadingSpecial(false);
+ 			pgs.setMinimumSpecial(1);
+ 
+-			Collection<Character> excl = pgs.getExcludedChars();
++			HashSet<Character> excl = new HashSet<>(pgs.getExcludedChars());
+ 			excl.addAll(Arrays.asList('o', 'l', 'O', 'I', '1', '0'));
+ 			excl.addAll(Arrays.asList(PasswordGenerator.ALL_SPECIALS));
+ 			excl.removeAll(Arrays.asList(   // some are okay to use
+diff --git a/src/main/afrlew/wizard/EWizardException.java b/src/main/afrlew/wizard/EWizardException.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/afrlew/wizard/EWizardException.java
+@@ -0,0 +1,152 @@
++package afrlew.wizard;
++
++import java.util.Locale;
++
++import org.slf4j.Logger;
++
++import afrlew.Log;
++
++/**
++ * For when we need a unique exception class signature for special handling,
++ * and/or can make good use of the log-and-throw utility.  This is intended
++ * to slowly replace the use of {@link afrlew.io.WzdException} in non-I/O areas.
++ *
++ * <p>The exact parent type is still being debated.
++ */
++public class EWizardException extends Exception
++{
++	/**
++	 * Log-and-Throw utility.  Logs an error message to the given destination,
++	 * then creates an {@code EWizardException} instance with the same message
++	 * and throws it.  This function never returns, but is declared to return
++	 * so that callers
++	 * may use <pre>
++	 *   throw EWizardException.LT (....);</pre>
++	 * and compilers will mostly DTRT when it comes to analyzing control
++	 * flow.  (Note that the 'throw' inside this function is the one actually
++	 * initiating the unwind; the optional 'throw' at the call site is just
++	 * for stopping control flow analysis from complaining.)
++	 *
++	 * @param L
++	 *            An SLF4J instance; if {@code null}, standard arror will be
++	 *            used as a destination instead.
++	 * @param t
++	 *            If non-{@code null}, the message and stack trace from this
++	 *            exception will be additionally logged, and passed as the
++	 *            "chained cause" to the thrown instance.  If {@code null},
++	 *            nothing will be added to the log/exception.
++	 * @param fmt
++	 *            The message to log; this will be
++	 *            {@linkplain String#format(Locale, String, Object...) format}ted
++	 *            with a {@code null} Locale, so may contain appropriate %-tokens.
++	 * @param args
++	 *            optional format arguments
++	 * @return technically, it never does
++	 * @throws EWizardException because that's the point
++	 */
++	public static EWizardException
++	LT (Logger L, Throwable t, String fmt, Object... args)
++			throws EWizardException
++	{
++		String logonly_prefix = String.format((Locale)null,
++				"{EWizardException.LT logging pre-throw%s} ",
++				t != null ? ", stack trace follows" : "");
++		String msg = args.length > 0 ? String.format (fmt, args) : fmt;
++		if (L == null) {
++			L = Log.mkfallback(true);
++			logonly_prefix = "{No log available! Trying stderr.}" + logonly_prefix;
++		}
++		if (t != null) {
++			t.fillInStackTrace();
++			L.error (logonly_prefix + msg, t);
++			throw new EWizardException (msg, t);
++		}
++
++		L.error (logonly_prefix + msg);
++		throw new EWizardException (msg);
++	}
++
++
++	/**
++	 * Wrapper around lots of typecast expressions.
++	 *
++	 * @param exception
++	 *            An exception instance.
++	 * @param obj
++	 *            An arbitrary object.
++	 * @return true if {@code exception} is an {@code EWizardException}, and
++	 *         has an ancillary object set, and that object
++	 *         {@link Object#equals(Object) equals} the given {@code obj}; false
++	 *         otherwise
++	 */
++	public static boolean
++	compAncillary (Exception exception, Object obj)
++	{
++		if (exception instanceof EWizardException) {
++			Object anc = ((EWizardException)exception).getAncillary();
++			if (anc != null) {
++				return anc.equals(obj);
++			}
++		}
++		return false;
++	}
++
++
++	private Object ancillary = null;
++
++
++	/**
++	 * Construct a new EWizardException with a detailed message and no other
++	 * information.  The ancillary object will be empty.
++	 *
++	 * @param message
++	 *            the detailed message
++	 */
++	public EWizardException (String message) {
++		super(message);
++	}
++
++
++	// This is the WzdException constructor used by Ciphers and SPRNG during errors.
++	/**
++	 * Construct a new EWizardException with a detailed message and a chained
++	 * previous exception.  The ancillary object will be empty.
++	 *
++	 * @param message
++	 *            the detailed message
++	 * @param cause
++	 *            the previous exception
++	 */
++	public EWizardException (String message, Throwable cause) {
++		super (message, cause);
++	}
++
++
++	/**
++	 * Returns the ancillary information object.
++	 *
++	 * @return live reference to arbitrary data, or {@code null} if none
++	 *         was provided
++	 */
++	public Object
++	getAncillary()
++	{
++		return ancillary;
++	}
++
++
++	/**
++	 * Set a new ancillary information object, in preparation for throwing.
++	 *
++	 * @param object
++	 *            a new piece of information, or {@code null} to clear any
++	 *            previous information
++	 * @return this instance
++	 */
++	public EWizardException
++	setAncillary (Object object)
++	{
++		this.ancillary = object;
++		return this;
++	}
++}
+diff --git a/src/main/afrlew/wizard/EncryptionWizard.java b/src/main/afrlew/wizard/EncryptionWizard.java
+--- a/src/main/afrlew/wizard/EncryptionWizard.java
++++ b/src/main/afrlew/wizard/EncryptionWizard.java
+@@ -966,18 +966,20 @@
+ 
+ 
+ 	/**
+-	 * "Real" entry point to Encryption Wizard.  The version checking wrapper
+-	 * has already finished executing and loaded us, and hands off control.
++	 * "Real work" entry point to Encryption Wizard.  The version checking and
++	 * temporary directory setup wrappers have already finished executing.  At
++	 * this point, control is handed over (so we can safely do things like call
++	 * exit in arbitrary conditions).
+ 	 *
+ 	 * @param errors_file
+ 	 *            If Launch decided to redirect standard error to a file,
+-	 *            this is the path to that file, else null.
++	 *            this is the path to that file, else {@code null}.
+ 	 * @param onExit
+ 	 *            Stored as {@link #ONEXIT}.
+ 	 * @param fullArgs
+ 	 *            The original program argument vector, along with any "extra"
+ 	 *            arguments passed from previous sessions, built-in for this
+-	 *            edition or build, etc.
++	 *            edition/build, etc.
+ 	 * @param extraArgCount
+ 	 *            This many of {@code fullArgs} (starting at the beginning)
+ 	 *            are "extra".
+@@ -995,10 +997,10 @@
+ 		dlaunch = Constants.debugLaunch("main");
+ 
+ 		final Path cwd = Paths.get(SysUtils.getFirst(
+-				// <maybe some BuildConfig override here>,
++				// <maybe some BuildConfig override first>,
+ 				System.getProperty("afrlew.load.userdir"),
+ 				System.getProperty("user.dir"),
+-				"")   // empty path should be user.dir unless something broke
++				"")   // empty path should map to user.dir, this is a fallback
+ 			).toAbsolutePath();
+ 
+ 		dlaunch.format("continuity %s | %s%n",
+@@ -1152,8 +1154,8 @@
+ 
+ 		/*
+ 		 * Allow for OS-specific settings to fire off as early as possible.
+-		 * This also permits FileUtils.getConfigFile, as used by ConfigManager
+-		 * and others (typically via DP.getInstance).
++		 * This also permits the use of FileUtils.getConfigFile, as used by
++		 * ConfigManager and others (typically via DP.getInstance).
+ 		 */
+ 		final DesktopProvider desktop = DesktopProvider.getInstance();
+ 		dlaunch.println("platform support created");
+@@ -1331,9 +1333,11 @@
+ 		dlaunch.println("key strength configured");
+ 
+ 
+-		// Certain options could be handled by the option parser itself, but
+-		// they require data unavailable until after parsing has finished, so
+-		// do that stuff now.
++		/*
++		 * Certain early-exit options could technically be handled by the CLI
++		 * parser itself, but they require data unavailable until after setup
++		 * has finished, so do that stuff now.
++		 */
+ 		if (cliFlags.seen("sys-info")) {
+ 			SysUtils.gatherSystemInfo(false).dump (out, "\n== ", " ==", "", "");
+ 			exit(EXIT.SUCCESS);
+@@ -1352,18 +1356,31 @@
+ 					"actually be many algorithms."));
+ 			exit(EXIT.SUCCESS);
+ 		}
+-
+-		// This is very verbose code, moved out of the way.
+ 		if (cliFlags.seen("run-platform")) {
+ 			String[] cmdarray = cliFlags.argFor("run-platform").split(":",2);
+ 			String cmd = cmdarray[0].toLowerCase(Locale.ENGLISH);
+ 			String arg = cmdarray.length < 2 || cmdarray[1].isEmpty() ? null : cmdarray[1];
+-
++			// This is very verbose code, moved out of the way.
+ 			EXIT status = handleRunPlatform (desktop, cmd, arg);
+ 			exit(status);
+ 		}
+ 
+ 
++		/*
++		 * Similar to the MessageDigestAlgorithm above and the other_gui_work
++		 * below, we have some setup that can happen in the background.  We
++		 * don't need the results any earlier, but they might be needed early
++		 * in the front-end branches.
++		 *
++		 * At present it's only the saved settings for the password generator.
++		 * Creating the singleton instance spawns a task thread; we don't care
++		 * about holding that instance right now.  (Note that its creation does
++		 * access the configuration manager, so again, don't move this higher.)
++		 */
++		afrlew.genpass.PassGenSettingsManager.getInstance();
++		dlaunch.println("started password generator load");
++
++
+ 		if (BuildConfig.isDevel) {
+ 			if (cliFlags.seen("phil")) {
+ 				/*try {
+diff --git a/src/main/afrlew/wizard/GuiMode.java b/src/main/afrlew/wizard/GuiMode.java
+--- a/src/main/afrlew/wizard/GuiMode.java
++++ b/src/main/afrlew/wizard/GuiMode.java
+@@ -75,6 +75,7 @@
+ import afrlew.crypto.SecureRandomSource;
+ import afrlew.genpass.GenPasswordDialog;
+ import afrlew.genpass.PassGenSettings;
++import afrlew.genpass.PassGenSettingsManager;
+ import afrlew.io.EWFile;
+ import afrlew.io.FileType;
+ import afrlew.io.WzdCallbackHandler;
+@@ -234,13 +235,16 @@
+ 	{
+ 		assert commandLineFlags != null : "startGUI called with null command line flags";
+ 
++		// We end up needing this in every case.
++		ConfigManager confMgr = ConfigManager.getPreferences();
++
+ 		if (commandLineFlags.seen("hash")) {
+ 			// GUI+hash means going directly to the file info dialogs for
+ 			// checksums, then exiting.  Avoid all the massive menu creation
+ 			// work of the primary window if we're never going to see it.
+ 			try {
+ 				// See the accompanying comment in startGUIaux.
+-				ConfigManager.getPreferences().broadcastCurrent();
++				confMgr.broadcastCurrent();
+ 
+ 				// Do not call any Job's get* methods on the EDT when its own
+ 				// task thing will be popping up modal/blocking dialogs.
+@@ -274,7 +278,7 @@
+ 			// all the deletion is finished!
+ 			try {
+ 				// See the accompanying comment in startGUIaux.
+-				ConfigManager.getPreferences().broadcastCurrent();
++				confMgr.broadcastCurrent();
+ 
+ 				GuiMode.doSecDelete (inputFilesJob.getNT(), crypto, crypto,
+ 						/*errors go to popup window*/null);
+@@ -292,7 +296,21 @@
+ 		// Whether we're going into the password generator next, or doing the
+ 		// normal behavior, we still set up any initial state from the CLI before
+ 		// building the GUI.
+-		if (commandLineFlags.seen("genpass-param")) {
++		PassGenSettings currentPGS;
++		try {
++			currentPGS = PassGenSettingsManager.getInstance().prepareDefaults(
++					confMgr,
++					commandLineFlags.argFor("genpass-param"),
++					commandLineFlags.argFor("genpass-safe"));
++		}
++		catch (EWizardException ewe) {
++			String desc = "Error while preparing password generator settings";
++			EncryptionWizard.logFailure (desc, ewe);
++			informErrorHTML ("Saved settings failure", desc + ":  " + Log.d(ewe));
++			return null;
++		}
++
++/*		if (commandLineFlags.seen("genpass-param")) {
+ 			// See CommandLineMode.getPassGenSettings for a fuller version.
+ 			// This one does no detailed error checking, as it's already inside
+ 			// a sufficiently wide exception net, and users of the option with
+@@ -307,12 +325,12 @@
+ 			}
+ 
+ 			PassGenSettings.setDefaults(master);
+-		}
++		}*/
+ 
+ 		if (commandLineFlags.seen("genpass")) {
+ 			try {
+ 				// See the accompanying comment in startGUIaux.
+-				ConfigManager.getPreferences().broadcastCurrent();
++				confMgr.broadcastCurrent();
+ 
+ 				EventQueue.invokeLater(() -> {
+ 					GenPasswordDialog window = new GenPasswordDialog(null);
+@@ -402,7 +420,7 @@
+ 				// the stuff that *must* happen before anything else, and then
+ 				// invokeLater the things that can be done concurrently with
+ 				// all of postFirstDisplay's tasks
+-				INSTANCE[0] = new GuiMode (frame, commandLineFlags, crypto,
++				INSTANCE[0] = new GuiMode (frame, commandLineFlags, crypto, confMgr,
+ 						incomingFileCount, postFirstDisplay);
+ 
+ 				startGUIaux (frame, INSTANCE[0], commandLineFlags,
+@@ -793,7 +811,8 @@
+ 	 * Constructor is run on the EDT.
+ 	 */
+ 	private GuiMode (JFrame toplevelFrame, CommandLine.Results commandLineFlags,
+-			Hut8 crypto_provider, int fileCount, final List<Runnable> postFirstDisplay)
++			Hut8 cryptoProvider, ConfigManager configManager,
++			int fileCount, final List<Runnable> postFirstDisplay)
+ 	{
+ 		LOGGER.trace("Construction beginning.");
+ 
+@@ -811,13 +830,13 @@
+ 
+ 		this.cliFlags = commandLineFlags;
+ 		this.desktop = DesktopProvider.getInstance();
+-		this.crypto = crypto_provider;
++		this.crypto = cryptoProvider;
+ 		this.mainFrame = toplevelFrame;
+ 
+ 		this.keychainMgr = KeychainManager.getKeychainManager();
+ 		keychainMgr.setCryptoSource(crypto);  // XXX
+ 
+-		this.confMgr = ConfigManager.getPreferences();
++		this.confMgr = configManager;
+ 		this.tmpConfMgr = confMgr.ephemeralGUI("per-session GUI configs");
+ 		this.gstate = new VisualState(
+ 				VisualState.GLASS,     mainFrame.getGlassPane(),
+diff --git a/src/main/afrlew/wizard/prefs/ConfigManager.java b/src/main/afrlew/wizard/prefs/ConfigManager.java
+--- a/src/main/afrlew/wizard/prefs/ConfigManager.java
++++ b/src/main/afrlew/wizard/prefs/ConfigManager.java
+@@ -12,6 +12,7 @@
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.HashMap;
+ import java.util.LinkedList;
+@@ -36,6 +37,7 @@
+ import afrlew.Constants.LocalStatus;
+ import afrlew.Log;
+ import afrlew.util.FileUtils;
++import afrlew.util.StringUtils;
+ import afrlew.util.SysUtils;
+ import afrlew.wizard.CommandLine;
+ import afrlew.wizard.EncryptionWizard;
+@@ -160,7 +162,12 @@
+ 		public abstract Val
+ 		get();
+ 
+-		/** Like {@link #get()} but in a smart string form. */
++		/**
++		 * Like {@link #get()}'s "currently active" behaior, but produces a
++		 * string that can be fed back through a {@code valOf} function.
++		 *
++		 * @return never null
++		 */
+ 		public String
+ 		getString()
+ 		{
+@@ -169,6 +176,9 @@
+ 			if (type.isEnum()) {
+ 				return ((Enum<?>)now).name();
+ 			}
++			if (type.isArray()) {
++				return Arrays.deepToString((Object[])now);
++			}
+ 			return now.toString();
+ 		}
+ 
+@@ -502,7 +512,7 @@
+ 		 * initial defaults and for restoring from saved preferences.
+ 		 *
+ 		 * <p>Tries to parse the incoming string into a value of the
+-		 * appropriate type.
++		 * appropriate type, as per {@link #valOf}.
+ 		 *
+ 		 * @param valstr
+ 		 *            Valid values depend on Val, but must not be null.
+@@ -1132,7 +1142,7 @@
+ 	 * @param defaults
+ 	 *            Used when migrating stored data from serial 2.
+ 	 * @param latest_serial
+-	 *            Stored preferences older than this will be migrated.
++	 *            Stored preferences older/less than this will be migrated.
+ 	 * @return as above; will not be null
+ 	 */
+ 	private LocalStatus
+@@ -1175,8 +1185,8 @@
+ 			// NOTA BENE all of these cases are fall-through
+ 			switch (serial) {
+ 			case 1:
++				LOGGER.info("Creating/migrating stored preferences s1");
+ 				// This reassigns _jprefs to the 'isOurs' preferences path.
+-				LOGGER.info("Creating/migrating stored preferences s1");
+ 				migrate1to2();
+ 			case 2:
+ 				LOGGER.info("Migrating stored preferences from s2");
+@@ -1234,6 +1244,7 @@
+ 		//valOfMap.put (BigDecimal.class  , BigDecimal::new);
+ 		//valOfMap.put (BigInteger.class  , BigInteger::new);
+ 		//valOfMap.put (Character.class   , (valstr) -> Character.valueOf(valstr.charAt(0)));
++		valOfMap.put (String[].class    , s -> StringUtils.unToStringArrays(s).array());
+ 
+ 		// Caches all the permissions that we'd normally be able to use at
+ 		// this scope.
+@@ -1278,6 +1289,9 @@
+ 
+ 				PrEntry<?> entry = PrEntry.make (cnf, pfn);
+ 				String valAsString = defaults.getProperty(key);
++				// Unset values from the defaults properties reach here as
++				// an empty string rather than a null (which would explode
++				// the setString call).
+ 				entry.setString (valAsString, Category.DEFAULT);
+ 				_active.put (key, entry);
+ 			}
+diff --git a/src/main/afrlew/wizard/prefs/Keys.java b/src/main/afrlew/wizard/prefs/Keys.java
+--- a/src/main/afrlew/wizard/prefs/Keys.java
++++ b/src/main/afrlew/wizard/prefs/Keys.java
+@@ -28,6 +28,7 @@
+ 		hash_separator (String.class, true, "true",
+           "hash-sep", arg -> arg.trim()),
+ 		file_output_fixed (Path.class, BuildConfig.aucFileOutputFixed, "aucFileOutputFixed", null, null),
++		genpass_all (String[].class, true, "true", null, null),
+ 		clipboard_clear_delay (Integer.class, BuildConfig.aucClipboardAutoClear, "aucClipboardAutoClear", null, null),
+ 		metadata_display_popbuttons (Boolean.class, BuildConfig.aucMetadataPopButtons, "aucMetadataPopButtons", null, null),
+ 		delete_files_securely (Boolean.class, BuildConfig.aucSecureDelete, "aucSecureDelete",
+@@ -41,6 +42,7 @@
+           "delete-inputs", p -> afrlew.ui.bits.PostProcInputHandling.DELETE),
+ 		guilaf (String.class, true, "true", null, null),
+ 		file_display_style (afrlew.ui.bits.FileDisplayStyle.class, BuildConfig.aucFileDisplayStyle, "aucFileDisplayStyle", null, null),
++		genpass_name (String.class, BuildConfig.aucGenPassChoice, "aucGenPassChoice", null, null),
+ 		nop (Void.class, false, null, null, null); // unused outside of overrideFromOptions
+ 
+ 		public final Class<?> type;
+@@ -113,6 +115,10 @@
+ 		{ return lookup("file_output_fixed",Path.class).get(); }
+ 	public void set_file_output_fixed (Path arg)
+ 		{ lookup("file_output_fixed",Path.class).setObject(arg,Category.PERSIST); }
++	public String[] get_genpass_all()
++		{ return lookup("genpass_all",String[].class).get(); }
++	public void set_genpass_all (String[] arg)
++		{ lookup("genpass_all",String[].class).setObject(arg,Category.PERSIST); }
+ 	public Integer get_clipboard_clear_delay()
+ 		{ return lookup("clipboard_clear_delay",Integer.class).get(); }
+ 	public void set_clipboard_clear_delay (Integer arg)
+@@ -153,6 +159,10 @@
+ 		{ return lookup("file_display_style",afrlew.ui.bits.FileDisplayStyle.class).get(); }
+ 	public void set_file_display_style (afrlew.ui.bits.FileDisplayStyle arg)
+ 		{ lookup("file_display_style",afrlew.ui.bits.FileDisplayStyle.class).setObject(arg,Category.PERSIST); }
++	public String get_genpass_name()
++		{ return lookup("genpass_name",String.class).get(); }
++	public void set_genpass_name (String arg)
++		{ lookup("genpass_name",String.class).setObject(arg,Category.PERSIST); }
+ 
+ 	private class EphemeralBase implements AutoCloseable
+ 	{
+diff --git a/src/test/afrlew/TestBase.java b/src/test/afrlew/TestBase.java
+--- a/src/test/afrlew/TestBase.java
++++ b/src/test/afrlew/TestBase.java
+@@ -210,7 +210,7 @@
+ 	 * destination can be easily changed.
+ 	 *
+ 	 * <p>If the given format string does not include a terminating newline,
+-	 * this method will perform one.
++	 * this method will perform one.  (A blank line can be done with out("").)
+ 	 */
+ 	protected static void
+ 	out (String fmt, Object... args)
+diff --git a/src/test/afrlew/util/StringUtilsTest.java b/src/test/afrlew/util/StringUtilsTest.java
+--- a/src/test/afrlew/util/StringUtilsTest.java
++++ b/src/test/afrlew/util/StringUtilsTest.java
+@@ -1,5 +1,6 @@
+ package afrlew.util;
+ 
++import static org.junit.Assert.assertArrayEquals;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ 
+@@ -198,6 +199,61 @@
+ 		out("Done with array join");
+ 	}
+ 
++	@Test public void
++	tofrom_array()
++	{
++		out("Testing array to/from strings");
++		int rows = 3;
++		int cols = 5;
++
++		Integer[] iarr1 = new Integer[cols];
++		for (int j = 0; j < cols; j++) {
++			iarr1[j] = Integer.valueOf(j+5);
++		}
++		String str = Arrays.deepToString(iarr1);
++		out("toString output:  %s", str);
++		out("");
++
++		StringUtils.ArrayingResult<Integer[]> result1 =
++				StringUtils.unToStringArrays (Integer[].class, Integer.class, Integer::valueOf, str);
++		out("Returned dimensions  %d", result1.dims());
++		assertEquals ("One-dimensional array dim", 1, result1.dims());
++		out("Dump:");
++		for (Integer ii : result1.array()) {
++			System.out.print(ii);  System.out.print("  ");
++		}
++		System.out.println();
++		assertArrayEquals ("One-dimensional array", iarr1, result1.array());
++		result1 = null;
++
++
++		Integer[][] iarr2 = new Integer[rows][cols];
++		for (int i = 0; i < rows; i++) {
++			for (int j = 0; j < cols; j++) {
++				iarr2[i][j] = Integer.valueOf(i*j);
++			}
++		}
++		str = Arrays.deepToString(iarr2);
++		out("toString output:  %s", str);
++		out("");
++
++		StringUtils.ArrayingResult<Object> resultRaw =
++				StringUtils.unToStringArrays (Object.class, Integer.class, Integer::valueOf, str);
++		out("Returned dimensions  %d", resultRaw.dims());
++		assertEquals ("Two-dimensional array dim", 2, resultRaw.dims());
++		out("Dump:");
++		for (Integer[] row : resultRaw.arrayAs(Integer[][].class)) {
++			for (Integer cell : row) {
++				System.out.print(cell);  System.out.print("  ");
++			}
++			System.out.println();
++		}
++		System.out.println();
++		assertArrayEquals ("Two-dimensional array", iarr2, resultRaw.arrayAs(Integer[][].class));
++
++		out("Done with array to/from strings");
++	}
++
+ 
+ 	public static void main (String[] args) {
+ 		JUnitCore.runClasses (StringUtilsTest.class);

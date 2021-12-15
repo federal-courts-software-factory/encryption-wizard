@@ -1,0 +1,539 @@
+# HG changeset patch
+# User shelve@localhost
+# Date 1601503353 14400
+#      Wed Sep 30 18:02:33 2020 -0400
+# Node ID b0b7710ce8a3a37b67f57cff7b7cca7cc7f7257f
+# Parent  baf0686d7164182bb7252e288221432dde1cd888
+changes to: Merge 3.5 branch to trunk, bump version to 3.5.10.
+
+diff --git a/NOTES.txt b/NOTES.txt
+--- a/NOTES.txt
++++ b/NOTES.txt
+@@ -42,8 +42,8 @@
+    the two FIPS builds.  Repeat build steps 3-6 for Govt and Unified.
+ 
+ For a custom build, also on the release branch:
+-8) Tag, create an origin mark, and build as in steps 1-7.
+-9) "build/package -d" and "build/package -c" to bring in appropriate files
++8) Tag, create an origin mark, and build as in steps 1-5.
++9) "build/package -c -d" and "build/package -c" to bring in appropriate files
+    from the corresponding standard release and assemble the packages.
+ 
+ Releasing a standard build involves a lot of copying:
+diff --git a/src/main/afrlew/CLI.java b/src/main/afrlew/CLI.java
+--- a/src/main/afrlew/CLI.java
++++ b/src/main/afrlew/CLI.java
+@@ -32,11 +32,12 @@
+ 	private final URLClassLoader ucl;
+ 
+ 	/**
+-	 * Called when a 'print help and exit' option is parsed.  This should
++	 * Called when a 'print stuff and exit' option is parsed.  This should
+ 	 * eventually call {@link System#exit(int) exit()} with the given code.
+ 	 * The return value may always be null, but is declared to be an unchecked
+ 	 * exception so that callers may "throw" an otherwise-NOTREACHED function
+-	 * call.
++	 * call; nothing is ever actually thrown, but it allows the compiler to
++	 * not lose its mind over variable lifetimes versus initialization.
+ 	 */
+ 	private final Function<EXIT,RuntimeException> localexit;
+ 
+diff --git a/src/main/afrlew/Self.java b/src/main/afrlew/Self.java
+--- a/src/main/afrlew/Self.java
++++ b/src/main/afrlew/Self.java
+@@ -23,6 +23,7 @@
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.DirectoryNotEmptyException;
+ import java.nio.file.Files;
++import java.nio.file.InvalidPathException;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
+ import java.util.ArrayList;
+@@ -822,9 +823,24 @@
+ 
+ 		String launchOverride = System.getenv("AFRL_EW_JAVACMD");
+ 		if (launchOverride != null) {
+-			launchOverride = launchOverride.trim();
+-			String prev = cmd.set (0, launchOverride);
+-			dlaunch.format("not using Java launch binary '%s', replacing with '%s' instead%n", prev, launchOverride);
++			try {
++				launchOverride = launchOverride.trim();
++				Path loPath = Paths.get(launchOverride);
++				if (Files.isExecutable(loPath)) {
++					String prev = cmd.set (0, launchOverride);
++					dlaunch.format("not using Java launch binary '%s', replacing with '%s' instead%n", prev, launchOverride);
++				} else {
++					InvalidPathException badpath = new InvalidPathException (launchOverride,
++							String.format(
++								"AFRL_EW_JAVACMD value '%s' is not a runnable program.",
++								launchOverride));
++					return SysUtils.Pair.mkpair (badpath, null);
++				}
++			}
++			catch (InvalidPathException badpath) {
++				badpath.printStackTrace(System.err);
++				return SysUtils.Pair.mkpair (badpath, null);
++			}
+ 		}
+ 		dlaunch.println("relaunch command array is " + String.join(" | ",cmd));
+ 
+diff --git a/src/main/afrlew/ui/FileInfoDialog.java b/src/main/afrlew/ui/FileInfoDialog.java
+--- a/src/main/afrlew/ui/FileInfoDialog.java
++++ b/src/main/afrlew/ui/FileInfoDialog.java
+@@ -79,7 +79,7 @@
+  * telling where.
+  */
+ public class FileInfoDialog extends JDialog
+-		implements ActionListener, ClipboardOwner
++		implements ActionListener
+ {
+ 	private static final Logger LOGGER = Log.getFor(FileInfoDialog.class);
+ 
+@@ -647,12 +647,9 @@
+ 	public void
+ 	actionPerformed (ActionEvent e)
+ 	{
+-		ClipboardUtil.getClipboard().setContents(new StringSelection(
+-				e.getActionCommand()), this);
++		ClipboardUtil.copyNotSensitive(e.getActionCommand());
+ 	}
+ 
+-	@Override
+-	public void lostOwnership (Clipboard clipboard, Transferable contents) {}
+ 
+ 	private static final long serialVersionUID = 2147292402445575589L;
+ }
+diff --git a/src/main/afrlew/ui/KeyStorePanel.java b/src/main/afrlew/ui/KeyStorePanel.java
+--- a/src/main/afrlew/ui/KeyStorePanel.java
++++ b/src/main/afrlew/ui/KeyStorePanel.java
+@@ -325,7 +325,7 @@
+ 	        if (key == null) {
+ 	        	LOG.warn("Key was null");
+ 	        	JOptionPane.showMessageDialog(this,
+-	        			"The private key could not be loaded.",
++	        			"The private key could not be loaded.",  // FIXME crappy message
+ 	        			"Error",
+ 	        			JOptionPane.ERROR_MESSAGE);
+ 	        } else if (!(key instanceof PrivateKey)) {
+diff --git a/src/main/afrlew/ui/bits/WzdHTMLPane.java b/src/main/afrlew/ui/bits/WzdHTMLPane.java
+--- a/src/main/afrlew/ui/bits/WzdHTMLPane.java
++++ b/src/main/afrlew/ui/bits/WzdHTMLPane.java
+@@ -42,6 +42,7 @@
+ import afrlew.Constants;
+ import afrlew.Log;
+ import afrlew.ui.UIU;
++import afrlew.util.desktop.ClipboardUtil;
+ import afrlew.util.desktop.DesktopProvider;
+ import afrlew.wizard.ii.InformInquire;
+ 
+@@ -194,15 +195,24 @@
+ 			return false;
+ 		}
+ 
++		// TODO:  once we have JDK source again, look to see if there are any existing
++		// l10n keys for "Copy" here (and "Paste" in FileListTransferHandler).
++		final int DO_OKAY = 1, DO_COPY = 2, DO_CANCEL = 3;
+ 		String okText = UIManager.getString("OptionPane.okButtonText");
+-		if (InformInquire.inquire (that, "Launch web browser?",
++		// if (InformInquire.inquire (that, "Launch web browser?",   .... != -1 return true
++		switch (InformInquire.inquire (that, "Launch web browser?",
+ 				/*default=*/-1,
+ 				String.format (CONFIRM_BROWSER_FMT, okText, uri),
+-				1,    okText,
+-				2,    UIManager.getString("OptionPane.cancelButtonText"))
+-				!= 1)
++				DO_OKAY,    okText,
++				DO_COPY,    "Copy URL to clipboard",
++				DO_CANCEL,  UIManager.getString("OptionPane.cancelButtonText")))
+ 		{
+-			return true;
++			case DO_OKAY:  break;
++			case DO_COPY:
++				ClipboardUtil.copyNotSensitive(uri.toASCIIString());
++				return true;
++			default:
++				return true;
+ 		}
+ 
+ 		LOGGER.info("Launching web browser:  {}", uri);
+diff --git a/src/main/afrlew/util/CertUtils.java b/src/main/afrlew/util/CertUtils.java
+--- a/src/main/afrlew/util/CertUtils.java
++++ b/src/main/afrlew/util/CertUtils.java
+@@ -473,7 +473,7 @@
+ 					} else {
+ 						vals = String.valueOf(val);
+ 					}
+-					//System.err.println(">>> " + type + " is " + rdn.getValue() + " also " + vals);
++					//System.err.format(">>> %s is <<%s>> also <<%s>>%n", type, rdn.getValue(), vals);
+ 					return type + '=' + vals;
+ 				})
+ 				.collect(Collectors.toList());
+diff --git a/src/main/afrlew/util/EscrowKeyManager.java b/src/main/afrlew/util/EscrowKeyManager.java
+--- a/src/main/afrlew/util/EscrowKeyManager.java
++++ b/src/main/afrlew/util/EscrowKeyManager.java
+@@ -315,8 +315,11 @@
+ 			// visual result of HTML, but it will help the line wrapping
+ 			// make better decisions.
+ 			String c = CertUtils.extractIssuer(cert).trim();
++			//System.err.format("!!!! extracted <<%s>>%n", c);
+ //			c = c.replace (",", ", ");   already done in extractIssuer now
++			// maybe use encodeHTML here?
+ 			c = StringUtils.wrapHTML(c);   // appends a <br> at the end
++			//System.err.format("!!!! wrapped HTML<<%n%s%n>>%n", c);
+ 			displayIDs.add (c + fingerprint);
+ 		}
+ 
+diff --git a/src/main/afrlew/util/FileUtils.java b/src/main/afrlew/util/FileUtils.java
+--- a/src/main/afrlew/util/FileUtils.java
++++ b/src/main/afrlew/util/FileUtils.java
+@@ -15,51 +15,11 @@
+ import java.net.URL;
+ import java.nio.charset.Charset;
+ import java.nio.charset.StandardCharsets;
+-import java.nio.file.DirectoryIteratorException;
+-import java.nio.file.DirectoryNotEmptyException;
+-import java.nio.file.DirectoryStream;
+-import java.nio.file.FileSystem;
+-import java.nio.file.FileSystemNotFoundException;
+-import java.nio.file.FileSystems;
+-import java.nio.file.FileVisitOption;
+-import java.nio.file.FileVisitResult;
+-import java.nio.file.FileVisitor;
+-import java.nio.file.Files;
+-import java.nio.file.InvalidPathException;
+-import java.nio.file.LinkOption;
+-import java.nio.file.OpenOption;
+-import java.nio.file.Path;
+-import java.nio.file.Paths;
+-import java.nio.file.SimpleFileVisitor;
+-import java.nio.file.StandardCopyOption;
+-import java.nio.file.StandardOpenOption;
+-import java.nio.file.attribute.AclEntry;
+-import java.nio.file.attribute.AclEntryFlag;
+-import java.nio.file.attribute.AclEntryPermission;
+-import java.nio.file.attribute.AclEntryType;
+-import java.nio.file.attribute.AclFileAttributeView;
+-import java.nio.file.attribute.BasicFileAttributes;
+-import java.nio.file.attribute.FileAttribute;
+-import java.nio.file.attribute.PosixFileAttributeView;
+-import java.nio.file.attribute.PosixFilePermission;
+-import java.nio.file.attribute.PosixFilePermissions;
+-import java.nio.file.attribute.UserPrincipal;
+-import java.nio.file.attribute.UserPrincipalLookupService;
++import java.nio.file.*;
++import java.nio.file.attribute.*;
+ import java.security.GeneralSecurityException;
+ import java.security.SecureRandom;
+-import java.util.ArrayList;
+-import java.util.Arrays;
+-import java.util.Collections;
+-import java.util.EnumSet;
+-import java.util.HashMap;
+-import java.util.LinkedList;
+-import java.util.List;
+-import java.util.ListIterator;
+-import java.util.Locale;
+-import java.util.Map;
+-import java.util.Objects;
+-import java.util.Set;
+-import java.util.WeakHashMap;
++import java.util.*;
+ import java.util.concurrent.ExecutionException;
+ import java.util.function.Consumer;
+ import java.util.function.Predicate;
+@@ -350,7 +310,7 @@
+ 					Files.move (from, to, StandardCopyOption.REPLACE_EXISTING);
+ 					Thread.sleep(10);   // and about whether the file is still there
+ 				}
+-				catch (java.nio.file.FileAlreadyExistsException bug8021384) {
++				catch (FileAlreadyExistsException bug8021384) {
+ 					// https://bugs.openjdk.java.net/browse/JDK-8021384
+ 					// "FileAlreadyExistsException when use Files.move with REPLACE_EXISTING"
+ 					//
+@@ -585,17 +545,19 @@
+ 
+ 	/**
+ 	 * Consolidates all of the string-into-path steps, resolving the given
+-	 * name against the user base directory and normalizing the result.
++	 * name against the user base directory and
++	 * {@linkplain Path#normalize() normalizing} the result.
+ 	 *
+ 	 * @param filename
+ 	 *            Must not be {@code null}, should be not dumb.
+-	 * @return a normalized Path instance
++	 * @return a normalized absolute Path instance
+ 	 * @throws InvalidPathException if {@code filename} cannot be used (will
+ 	 *         already have been logged to general category)
+ 	 * @see SysUtils#getUserBaseDir()
+ 	 */
+ 	public static Path
+ 	sanePath (String filename)
++			throws InvalidPathException
+ 	{
+ 		try {
+ 			return SysUtils.getUserBaseDir().resolve(filename.trim()).normalize();
+@@ -662,7 +624,7 @@
+ 	 * <dt>+foo</dt>
+ 	 *   <dd>Normal file, opened for appending.</dd>
+ 	 * <dt>./+foo</dt>
+-	 *   <dd>In the case of an automatically-prepended {@code ./}, the special
++	 *   <dd>In the case of an automatically-prepended {@code "./"}, the special
+ 	 *   {@code +} will still be detected.  This does not apply to a file as
+ 	 *   part of an actual path given by the user, e.g.,
+ 	 *   {@code dir1/dir2/dir3/+foo.txt} will <em>not</em> activate appending,
+@@ -694,7 +656,7 @@
+ 		// CLI parsing of "foo" and "+bar" can result in "./foo" and "./+bar"
+ 		// depending on the control flow we took to get here, so incorporate
+ 		// that when checking for empty names.
+-		final String prefixDotSlash = "." + java.io.File.separator;
++		final String prefixDotSlash = "." + File.separator;
+ 		if (inDotSlash = name.startsWith(prefixDotSlash)) {
+ 			// We need to detect this condition, but we no longer make use of
+ 			// the information after this point.
+@@ -714,8 +676,7 @@
+ 			// Use a name which will make sense in log/error messages.  This
+ 			// doesn't actually get opened unless restream()... so don't do
+ 			// that.  Maybe a null here instead?
+-			Path stdout = Paths.get("standard output");
+-			nof = new NamedOpenFile(stdout);
++			nof = new NamedOpenFile(Paths.get("NOF standard output"));
+ 			nof.writer = new PrintWriter (new NonClosingOutputStream(System.out), true);
+ 			return nof;
+ 		}
+@@ -790,17 +751,25 @@
+ 	 *            {@linkplain DesktopProvider#getApplicationDataPath(Boolean) application data path}.
+ 	 *            (The {@code config-*} directory name will be unconditionally
+ 	 *            added to this path before resolving the given {@code name}.)
++	 *            The first {@code appDir} will be cached for the rest of the
++	 *            session, which is kinda janky.
+ 	 * @param name
+-	 *            Base name of the configuration file.
++	 *            Base name of the configuration file.  Must not be {@code null},
++	 *            but an empty string is allowed (will return the application
++	 *            data path as a Path instance).
+ 	 * @return a Path to that file
+-	 * @see #writingConfigFile(String)
++	 * @see #writingConfigFile(String, Charset...)
+ 	 */
+ 	public static Path
+ 	getConfigFile (Path appDir, String name)
+ 	{
+ 		try {
+ 			if (_CFPATH == null) {
+-				_CFPATH = appDir.resolve ("config-" + Constants.CONFIG_TAG);
++				synchronized (FileUtils.class) {
++					if (_CFPATH == null) {
++						_CFPATH = appDir.resolve ("config-" + Constants.CONFIG_TAG);
++					}
++				}
+ 			}
+ 			return _CFPATH.resolve(name);    // is okay for name to be empty
+ 		}
+@@ -818,10 +787,10 @@
+ 
+ 	/**
+ 	 * All the same behavior of
+-	 * {@link FileUtils#getConfigFile(String) getConfigFile}
++	 * {@link #getConfigFile(String) getConfigFile}
+ 	 * with these additions:  the named file is created along with any needed
+ 	 * parent directories.  If the file already exists, it is deleted and
+-	 * recreated.  If any errors occur, a null is returned.
++	 * recreated.  If any errors occur, a {@code null} is returned.
+ 	 *
+ 	 * <p>The buffered writer is opened with the optional character set, or
+ 	 * US-ASCII if unspecified.
+@@ -869,8 +838,7 @@
+ 		private static final boolean debugging = Constants.isDebug("io.outfile");
+ 		private static final PrintStream debug = Constants.toggledErr("io.outfile");
+ 
+-		/** The {@linkplain Path#toRealPath(java.nio.file.LinkOption...) real path}
+-		 *  of this file. */
++		/** The {@linkplain Path#toRealPath(LinkOption...) real path} of this file. */
+ 		public final Path         pathname;
+ 		public       PrintWriter  writer;
+ //		private   OutputStream  need to hold a copy and redo restream
+@@ -882,15 +850,20 @@
+ 		 * {@linkplain Files#newBufferedWriter(Path, Charset, OpenOption...) opens
+ 		 * a buffered Writer} for that path.
+ 		 *
++		 * <p>Any problems normally resulting in an {@code IOException} will
++		 * store the exception instead; see {@link #checkOpen()}.
++		 *
+ 		 * @param p
+ 		 *            The path to open for writing.  (If not absolute, {@code p}
+ 		 *            will be resolved against the user base location.)
+ 		 * @param cs
+-		 *            Character set for opening the underlying writer.
++		 *            Character set for opening the underlying writer.  May
++		 *            not be {@code null}.
+ 		 * @param opts
+ 		 *            Optional options (ha) for opening the underlying writer.
+ 		 */
+-		public NamedOpenFile (Path p, Charset cs, OpenOption... opts) {
++		public NamedOpenFile (Path p, Charset cs, OpenOption... opts)
++		{
+ 			PrintWriter pw = null;
+ 			try {
+ 				p = SysUtils.getUserBaseDir().resolve(
+@@ -916,7 +889,7 @@
+ 						@Override public void close()   // throws IOException
+ 						{
+ 							if (this.unclosed) {
+-								debug.println("NOF calling close for " + NamedOpenFile.this.pathname.toString());
++								debug.println("NOF calling close for " + NamedOpenFile.this.pathname);
+ 								super.close();
+ 								this.unclosed = false;
+ 							}
+@@ -937,15 +910,23 @@
+ 			this.pathname = fake;
+ 			this.writer = null;
+ 		}
+-		public OutputStream restream() throws IOException {
++
++		public OutputStream
++		restream()
++			throws IOException
++		{
+ 			FileUtils.close_seriously(writer);
+ 			return Files.newOutputStream(pathname);
+ 		}
++
+ 		/**
+ 		 * If any exceptions were thrown during the initial open, this will
+ 		 * re-throw them.
+ 		 */
+-		public void checkOpen() throws IOException {
++		public void
++		checkOpen()
++			throws IOException
++		{
+ 			if (failure != null)
+ 				throw failure;
+ 		}
+@@ -963,8 +944,10 @@
+ 	 * @param filter
+ 	 *            Optional filter to apply to each existing directory entry.
+ 	 *            May be null to pass through all entries.
+-	 * @return a non-null but possibly empty List
++	 * @return a non-null but possibly empty List; entries will have been
++	 *         resolved against the given directory
+ 	 * @throws IOException anything from {@link Files#newDirectoryStream(Path, String)}
++	 *         including its iteration
+ 	 */
+ 	public static List<Path>
+ 	glob (Path dir, String pattern, Predicate<Path> filter)
+@@ -1493,7 +1476,7 @@
+ 				for (int i=0; i<name.length(); i++) {
+ 					char c = name.charAt(i);
+ 					if (bad_portable_chars.indexOf(c) != -1) {
+-						throw new java.nio.file.InvalidPathException (name,
++						throw new InvalidPathException (name,
+ 								String.format("Problematic %s character", Character.getName(c)),
+ 								i);
+ 					}
+@@ -1515,7 +1498,7 @@
+ 					}
+ 				}
+ 			}
+-			catch (java.nio.file.InvalidPathException badpath) {
++			catch (InvalidPathException badpath) {
+ 				String warning_format =
+ 						"Bad potential filename ({}), retrying with '{}'.";
+ 
+@@ -1704,7 +1687,7 @@
+ 	 *
+ 	 * <p>The {@code callback} function is described by {@link PathVisit},
+ 	 * called by the traversal function
+-	 * {@link java.nio.file.Files#walkFileTree Files.walkFileTree}.  The value
++	 * {@link Files#walkFileTree Files.walkFileTree}.  The value
+ 	 * returned from the supplied function is added to the returned list
+ 	 * if-and-only-if the value is not null.  (Quick lambda paste:<pre>
+ 	 * (path, attrs, isFile)</pre>.)
+diff --git a/src/main/afrlew/util/desktop/ClipboardUtil.java b/src/main/afrlew/util/desktop/ClipboardUtil.java
+--- a/src/main/afrlew/util/desktop/ClipboardUtil.java
++++ b/src/main/afrlew/util/desktop/ClipboardUtil.java
+@@ -16,6 +16,7 @@
+ import afrlew.Log;
+ import afrlew.wizard.prefs.ConfigManager;
+ 
++// TODO:  look at the builtin support in TransferHandler and DefaultEditorKit
+ public class ClipboardUtil implements ClipboardOwner
+ {
+ 	private static final class EraserTimerTask extends TimerTask
+@@ -120,6 +121,28 @@
+ 
+ 
+ 	/**
++	 * Performs a plain copy to the system clipboard.  No overwriting will be
++	 * done, and nothing will happen when subsequent copying occurs (the "lost
++	 * ownership" call).
++	 *
++	 * <p>Almost named this method 'copyInsensitive'.
++	 *
++	 * @param text
++	 *            May technically be {@code null} to clear the clipboard, I think.
++	 */
++	public static void
++	copyNotSensitive (final String text)
++	{
++		// This will boil down to 'CLIPBOARD.setContents()' except in the case
++		// when a previous copy has been done and a timer is already ticking.
++		// Replacing the contents would then mean that they get erased instead;
++		// we'll go through this route instead to safely wave off the ticking
++		// cancel timer.
++		copySensitive (0, null, new StringSelection(text), null, null);
++	}
++
++
++	/**
+ 	 * A wrapper around
+ 	 * {@link ClipboardUtil#copySensitive(int, ClipboardOwner, Transferable, IntConsumer, IntConsumer)}
+ 	 * after creating a StringSelection around <b>text</b>.
+diff --git a/src/main/afrlew/util/task/JobManager.java b/src/main/afrlew/util/task/JobManager.java
+--- a/src/main/afrlew/util/task/JobManager.java
++++ b/src/main/afrlew/util/task/JobManager.java
+@@ -12,7 +12,9 @@
+ {
+ 	/**
+ 	 * This kludge is {@link java.util.concurrent.Callable Callable},
+-	 * but exposes utility methods to the client.
++	 * but exposes utility methods to the client.  The {@code call()}
++	 * method (with or without a {@code CallablePlus} parameter) is
++	 * declared to throw Exception.
+ 	 *
+ 	 * <p>The usual lambda syntax is<pre>
+ 	 *   task -> {
+diff --git a/src/main/afrlew/wizard/CommandLine.java b/src/main/afrlew/wizard/CommandLine.java
+--- a/src/main/afrlew/wizard/CommandLine.java
++++ b/src/main/afrlew/wizard/CommandLine.java
+@@ -1006,6 +1006,9 @@
+ 	 * @param launchJarName
+ 	 *            name of the user-visible JAR file, to be used in parsing
+ 	 *            error messages and {@code --help} output
++	 * @param localexit
++	 *            see 'localexit' member variable in CLI.java around line 40;
++	 *            control flow never reaches any actual 'throw' operations
+ 	 * @return all elements of {@code argv} which were not options (may be empty)
+ 	 * @throws IllegalArgumentException to report errors to the user
+ 	 */
+@@ -1110,7 +1113,7 @@
+ 			}
+ 		}
+ 
+-		// Getopt has no "restart".
++		// Getopt has no reinitialization API, just do this instead.
+ 		go = new Getopt (launchJarName, argv, _optstring, _longopts);
+ 		Option foundAction = null;
+ 
+diff --git a/src/test/afrlew/TestBase.java b/src/test/afrlew/TestBase.java
+--- a/src/test/afrlew/TestBase.java
++++ b/src/test/afrlew/TestBase.java
+@@ -210,7 +210,7 @@
+ 	 * destination can be easily changed.
+ 	 *
+ 	 * <p>If the given format string does not include a terminating newline,
+-	 * this method will perform one.
++	 * this method will perform one.  (A blank line can be done with out("").)
+ 	 */
+ 	protected static void
+ 	out (String fmt, Object... args)

@@ -1,0 +1,6 @@
+Move initSwingUI invocation.
+
+Even though init is being done before all other Swing work, it itself should
+run on the EDT to be extra-safe.  This occasionally trips up some of the older
+Linux L&F's that weren't very robust.
+

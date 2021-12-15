@@ -1,0 +1,273 @@
+# HG changeset patch
+# User shelve@localhost
+# Date 1551726524 18000
+#      Mon Mar 04 14:08:44 2019 -0500
+# Node ID bc55bc5aab13645f416442cb0d7809c81d00a9d9
+# Parent  43d43bd4335360fd73c394724527563ea9c18586
+changes to: Some desktop provider comments.
+
+diff --git a/src/main/afrlew/Self.java b/src/main/afrlew/Self.java
+--- a/src/main/afrlew/Self.java
++++ b/src/main/afrlew/Self.java
+@@ -352,6 +352,7 @@
+ 		final Path desktopPath;
+ 		SysUtils.Pair<CommandLine.Results,String[]> cliResults;
+ 		int extraArgCount;
++		Function<String,String> kludgeExe = null;
+ 
+ 		try (URLClassLoader ucl = wrappedLoader(true)) {
+ 			List<String> extraArgs;
+@@ -359,6 +360,7 @@
+ 				Object[] ugly = SELF.getDesktopProviderInfo(ucl);
+ 				extraArgs = (List<String>) ugly[0];
+ 				desktopPath = (Path) ugly[2];
++				kludgeExe = (Function<String,String>) ugly[3];
+ 			}
+ 
+ 			// All the -debug builds get logging cranked up and saved to disk,
+@@ -423,7 +425,7 @@
+ 				}
+ 			}
+ 			if (libNames != null && libNames.size() > 0) {
+-				int otherProcessExitCode = SELF.forkAndWait (libNames, desktopPath);
++				int otherProcessExitCode = SELF.forkAndWait (libNames, desktopPath, kludgeExe);
+ 				SELF.handleCleanup (otherProcessExitCode == EXIT.SUCCESS.value());
+ 				// Return from startup() goes back to EW_Self thread in Launch,
+ 				// which then simply falls off the end of its mainImpl/main.
+@@ -434,6 +436,7 @@
+ 		// Either not via Launch, or not needing the GUI, or there are no
+ 		// special JARs to pull in.  In the latter two cases, there's no need
+ 		// to spawn a new JVM; in the first case we *are* the new JVM.
++		kludgeExe = null;
+ 		SELF.dlaunch.flush();
+ 		SELF.dlaunch = Constants.debugLaunch("postinit");
+ 		final Consumer<EXIT> cleanupOurselves;
+@@ -605,7 +608,7 @@
+ 	//      failure to spawn process
+ 	// RuntimeException:  extraction to temp
+ 	private SysUtils.Pair<Exception,Process>
+-	unpackAndSpawn (List<String> jarNames, Path desktop)
++	unpackAndSpawn (List<String> jarNames, Path desktop, Function<String,String> kludgeExe)
+ 	{
+ 		String cp;
+ 		try {
+@@ -634,6 +637,14 @@
+ 		// Assemble a command line to fork a new JVM running the EW class
+ 		// directly, but with ${fileset.jars.special} on the classpath.
+ 		List<String> cmd = getRunningJREComponents();
++
++		// Potentially rewrite the executable path; in theory this will be a
++		// call to DesktopProvider's prepareCommand.
++		{
++			String[] words = kludgeExe.apply(cmd.remove(0)).split(" ");
++			cmd.addAll (0, Arrays.asList(words));
++		}
++
+ 		// Once we can assume JAVA9 as a base, we could just write all these
+ 		// into a temporary file, and then invoke with "java.exe @file".
+ 		if (Constants.JRE_VERSION[0] > 8) {
+@@ -709,13 +720,13 @@
+ 	 * @throws Exception from {@link #unpackAndSpawn(List, Path)}
+ 	 */
+ 	private int
+-	forkAndWait (List<String> libNames, Path desktop)
++	forkAndWait (List<String> libNames, Path desktop, Function<String,String> kludgeExe)
+ 		throws Exception
+ 	{
+ 		final Process p;
+ 		{
+ 			SysUtils.Pair<Exception,Process> kludge = unpackAndSpawn(
+-					libNames, desktop);
++					libNames, desktop, kludgeExe);
+ 			Exception e = kludge.getFirst();
+ 			p = kludge.getSecond();
+ 			if (e != null) {
+@@ -979,6 +990,7 @@
+ 	 *  0  List<String>    extra arguments, one per line of ADDFLAGS
+ 	 *  1  Path            DesktopProvider's getApplicationDataPath
+ 	 *  2  Path            DesktopProvider's getDesktopPath
++	 *  3  Function<String,String>  wrapper for calling DesktopProvider's prepareCommand
+ 	 */
+ 	private Object[]
+ 	getDesktopProviderInfo (final ClassLoader loader)
+@@ -986,6 +998,7 @@
+ 		PrintStream lerr = Constants.debugLaunch("@@@");
+ 		List<String> extraArgs = new ArrayList<>();
+ 		Path dataPath = null, desktopPath = null;
++		Function<String,String> kludgeExe = null;
+ 		try {
+ 			lerr.println("psess classloader active");
+ 			// avoid Constants massive static initialization block
+@@ -994,7 +1007,8 @@
+ 			Class<?> dpClass = loader.loadClass("afrlew.util.desktop.DesktopProvider");
+ 			Method getI = dpClass.getDeclaredMethod("getInstance"),
+ 				getADP = dpClass.getDeclaredMethod ("getApplicationDataPath", Boolean.class),
+-				getDP = dpClass.getDeclaredMethod("getDesktopPath");
++				getDP = dpClass.getDeclaredMethod("getDesktopPath"),
++				prepCmd = dpClass.getDeclaredMethod ("prepareCommand", String.class);
+ 			Object dpInstance = getI.invoke(null);
+ 			desktopPath = (Path) getDP.invoke(dpInstance);
+ 			lerr.format("determined generic desktop path as <<%s>>\n", desktopPath);
+@@ -1010,6 +1024,17 @@
+ 					FileUtils.unlink(addf);  // only used once, then delete the file
+ 				}
+ 			} else lerr.format("no addflags files in <<%s>>\n", confDirPath);
++			// There is nothing pleasant or wise about this:
++			kludgeExe = cmd -> {
++				String ret = cmd;
++				try {
++					ret = (String) prepCmd.invoke (dpInstance, cmd);
++				}
++				catch (ReflectiveOperationException roe) {
++					roe.printStackTrace(System.err);
++				}
++				return ret;
++			};
+ 			lerr.println("psess classloader closing");
+ 		}
+ 		catch (Throwable toobad) {
+@@ -1022,7 +1047,7 @@
+ 		}
+ 
+ 		return new Object[]{
+-			extraArgs, dataPath, desktopPath
++			extraArgs, dataPath, desktopPath, kludgeExe
+ 		};
+ 	}
+ 
+diff --git a/src/main/afrlew/util/desktop/DesktopProvider.java b/src/main/afrlew/util/desktop/DesktopProvider.java
+--- a/src/main/afrlew/util/desktop/DesktopProvider.java
++++ b/src/main/afrlew/util/desktop/DesktopProvider.java
+@@ -535,6 +535,13 @@
+ 	}
+ 
+ 
++	public String
++	prepareCommand (String executable)
++	{
++		return executable;
++	}
++
++
+ 	/******************** And now, the abstract stubs. */
+ 	/**
+ 	 * Return the family name of this provider's OS.  In practice, this will
+diff --git a/src/main/afrlew/util/desktop/WindowsDesktopProvider.java b/src/main/afrlew/util/desktop/WindowsDesktopProvider.java
+--- a/src/main/afrlew/util/desktop/WindowsDesktopProvider.java
++++ b/src/main/afrlew/util/desktop/WindowsDesktopProvider.java
+@@ -16,6 +16,7 @@
+ import java.nio.file.DirectoryStream;
+ import java.nio.file.Files;
+ import java.nio.file.InvalidPathException;
++import java.nio.file.LinkOption;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
+ import java.nio.file.StandardCopyOption;
+@@ -99,19 +100,40 @@
+ 		"<br><br>Click 'OK' to run the uninstallation process.  This will take " +
+ 		"several seconds.";
+ 
+-	private boolean likely_64bit = false;
+-	private Path    future_launcher = null;
++	private final String   windir;
++	private final boolean  likely_64bit;
++	// assigned when first needed in synchronized method
++	private       Path     future_launcher = null;
+ 
+ 
+ 	protected WindowsDesktopProvider (final String[] os, final Boolean fastLoad)
+ 		throws DesktopException
+ 	{
+ 		super (os, fastLoad);
+-		if (fastLoad)
++
++		this.windir = SysUtils.getFirst(
++				System.getenv("SystemRoot"),
++				System.getenv("windir"),
++				"C:\\Windows"    // should never get this far
++				);
++		try {
++			Path sanity = Paths.get(windir);
++			if (!Files.isDirectory (sanity, LinkOption.NOFOLLOW_LINKS))
++				throw new InvalidPathException (windir, "not a real directory");
++		}
++		catch (InvalidPathException ipe) {
++			LOGGER.error("cannot obtain Windows system root", ipe);
++			throw new DesktopException(ipe);
++		}
++
++		if (fastLoad) {
++			this.likely_64bit = true;  // wild-ass guess
+ 			return;
++		}
+ 
+ 		Pattern value_pattern = Pattern.compile("REG_SZ\\s+(.*)");
+ 		LinkedList<String> out = new LinkedList<>();
++		boolean amd64_found = false;
+ 		if (runRegOut (out, "query",
+ 				"\"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\"",
+ 				"/v", "BuildLabEx")
+@@ -124,11 +146,14 @@
+ 					// The AMD64 instruction set, even called this on Intel
+ 					// Core CPUs.  If there are other strings I've not seen
+ 					// them yet.
+-					if (val != null && val.contains("amd64"))
+-						this.likely_64bit = true;
++					if (val != null && val.contains("amd64")) {
++						amd64_found = true;
++						break;
++					}
+ 				}
+ 			}
+ 		}
++		this.likely_64bit = amd64_found;
+ 		out.clear();
+ 
+ 		// Find the Outlook temp folder names; the keys vary depending on the
+@@ -1263,7 +1288,7 @@
+ 	runRegOut (List<String> out, String... regcommands)
+ 	{
+ 		Command reg = new Command ("REG utility",
+-				System.getenv("WINDIR") + "\\system32\\reg.exe",
++				windir + "\\System32\\reg.exe",
+ 				regcommands);
+ 		try {
+ 			return reg.execute(out) == 0;
+@@ -1332,6 +1357,12 @@
+ 	}
+ 
+ 
++	// for Windows, the AWTD class is wrapped around a peer created with
++	// java.desktop/windows/classes/sun/awt/windows/WToolkit's createDesktopPeer
++	// resulting in WDesktopPeer.  For that, AWTD's open() and browse() both
++	// resolve to the 'open' verb in ShellExecute, which is wrapped by
++	// java.desktop/windows/native/libawt/windows/awt_Desktop.cpp but doesn't
++	// hold any particular surprises.
+ 	@Override
+ 	protected boolean
+ 	openLocationSpecial (Path path, Path dir, java.awt.Desktop awtd)
+@@ -1346,7 +1377,7 @@
+ 		// Note that Explorer tends to return an exit status of 1 even when
+ 		// it's forked correctly, so don't test for 0 or 1 here.
+ 		Command location = new Command ("Open File Location",
+-				System.getenv("WINDIR") + "\\explorer.exe",
++				windir + "\\explorer.exe",
+ 				"/select,", path.toString());
+ 		try {
+ 			//e.g., return location.execute() == 0;
+@@ -1358,4 +1389,15 @@
+ 		}
+ 		return true;
+ 	}
++
++
++	@Override
++	public String
++	prepareCommand (String executable)
++	{
++		if (true) return executable;
++		return windir + "\\System32\\rundll32.exe " +
++				windir + "\\System32\\url.dll,FileProtocolHandler " +
++				executable;
++	}
+ }
